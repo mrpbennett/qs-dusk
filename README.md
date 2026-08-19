@@ -19,22 +19,38 @@ native `omarchy theme set` path.
 - Leaves Omarchy's themes, current-state files, and application configuration
   under Omarchy's ownership.
 
-## Quick Start
+## Install
+
+Dusk is a standard Omarchy shell plugin — install it the Omarchy way. There
+are no scripts to clone or run:
 
 ```sh
-./install.sh
+omarchy plugin add https://github.com/mrpbennett/qs-dusk.git --enable
+```
 
+`omarchy plugin add` clones Dusk into
+`~/.config/omarchy/plugins/mrpbennett.dusk`, validates its manifest, and
+enables the bar widget. The first time the widget loads it installs the rest
+of itself, so nothing else is needed:
+
+- symlinks the `omarchy-auto-theme` and `dusk-scheduler` commands into
+  `~/.local/bin`,
+- writes the `dusk.service` user unit, which runs the scheduler straight from
+  the plugin folder with your graphical session, and
+- starts the daemon.
+
+Everything runs from the plugin folder, so `omarchy plugin update` keeps the
+entire extension current. The widget shows the current appearance in the bar
+and lets you switch Automatic / Light / Dark modes from the panel.
+
+Then choose your themes and mode:
+
+```sh
 # Choose the themes to use. List available slugs with: omarchy theme list
 omarchy-auto-theme themes --light catppuccin-latte --dark catppuccin
 
 # Follow your Omarchy weather location's sunrise and sunset.
 omarchy-auto-theme solar
-```
-
-Enable the optional bar control in the section you prefer:
-
-```sh
-omarchy plugin enable mrpbennett.dusk right
 ```
 
 ## Choose a Mode
@@ -98,6 +114,12 @@ The scheduler reads only the state it needs and stores its own data separately:
 | `~/.local/state/omarchy/dusk/state.json` | Scheduler status and last successful change |
 | `$XDG_RUNTIME_DIR/dusk/control.sock` | CLI and widget control channel |
 
+## Update Dusk
+
+```sh
+omarchy plugin update mrpbennett.dusk
+```
+
 ## Remove Dusk
 
 The following removes the bar widget, scheduler, commands, configuration, and
@@ -114,6 +136,20 @@ rm -rf ~/.local/lib/dusk ~/.config/omarchy/dusk ~/.local/state/omarchy/dusk
 rm -rf "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/dusk"
 systemctl --user daemon-reload
 ```
+
+## Dependencies
+
+- `python3` (standard library only — no pip packages) runs the CLI and
+  scheduler.
+- The scheduler and CLI shell out only to Omarchy itself (`omarchy theme
+  set`, and reading Omarchy's weather file for solar coordinates); Dusk
+  makes no network calls of its own.
+- `systemd --user` runs the `dusk.service` unit.
+- No non-stdlib QML imports in the bar widget.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
 
 ## Documentation
 

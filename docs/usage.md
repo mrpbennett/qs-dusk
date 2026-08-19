@@ -11,23 +11,20 @@ configs, backgrounds, or hooks.
 
 ## Install
 
-```sh
-./install.sh
-```
-
-This copies the scheduler into `~/.local/lib/dusk`, symlinks
-`~/.local/bin/omarchy-auto-theme` and `~/.local/bin/dusk-scheduler`, installs
-the `dusk.service` user unit, enables it for the graphical session, and copies
-the `mrpbennett.dusk` bar-widget plugin into
-`~/.config/omarchy/plugins/mrpbennett.dusk`.
-
-Restart your graphical session (or `systemctl --user start dusk`) once.
-
-### Bar widget (optional)
+Dusk is a standard Omarchy shell plugin. Install it with Omarchy's plugin
+manager — no scripts to clone or run:
 
 ```sh
-omarchy plugin enable mrpbennett.dusk right
+omarchy plugin add https://github.com/mrpbennett/qs-dusk.git --enable
 ```
+
+This clones Dusk into `~/.config/omarchy/plugins/mrpbennett.dusk`, validates
+its manifest, and enables the bar widget. The first time the widget loads it
+symlinks the `omarchy-auto-theme` and `dusk-scheduler` commands into
+`~/.local/bin`, writes the `dusk.service` user unit (running the scheduler
+straight from the plugin folder), and starts the daemon for the graphical
+session. Everything runs from the plugin folder, so `omarchy plugin update`
+keeps the extension current.
 
 The widget shows the current appearance with an icon and lets you switch Light /
 Dark / Automatic from the bar. Automatic normally uses sunrise and sunset from
