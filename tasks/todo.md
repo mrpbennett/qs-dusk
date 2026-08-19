@@ -6,6 +6,18 @@ Refinement complete. Existing saved scheduled configurations are preserved;
 the normal panel flow is a reliable Auto / Light / Dark controller with a
 polished, keyboard-operable panel.
 
+## Plugin Layout Refinement
+
+- [x] Move the plugin manifest and QML entry points to the repository root.
+- [x] Update installation and validation references for the root plugin folder.
+- [x] Validate the root folder using Omarchy's plugin validator.
+
+### Plugin Layout Review
+
+- `omarchy plugin validate .` — passed.
+- `bash -n install.sh` — passed.
+- `git diff --check` — passed.
+
 ## Refinement Plan
 
 - [x] Fix automatic-mode and retry recovery correctness.
@@ -43,7 +55,7 @@ bar widget.
   - [x] `cli.py` — `omarchy-auto-theme` command
 - [x] `bin/omarchy-auto-theme`, `bin/dusk-scheduler` launchers
 - [x] `systemd/dusk.service.tpl` user unit
-- [x] `shell/dusk/` Quickshell bar-widget plugin (manifest, Service, Panel, Icon)
+- [x] Root-level Quickshell bar-widget plugin (manifest, Service, Panel, Icon)
 - [x] `install.sh` installer
 - [x] `tests/` unittest suite (injected clock/timezone/location, fake omarchy)
 - [x] Install into real environment, validate plugin schema, enable service
@@ -71,7 +83,7 @@ bar widget.
 
 - `python3 -m unittest discover -s tests -v` (scheduler logic, independent of desktop)
 - `ruff check` on Python sources
-- `omarchy plugin validate shell/dusk`
+- `omarchy plugin validate .`
 - Manual: install, `omarchy-auto-theme status`, enable service, observe a transition
 
 ## Review
@@ -84,7 +96,7 @@ All steps verified:
   retry/no-op/transition-wait logic, IPC server/client, and CLI end-to-end with a fake
   omarchy.
 - **Lint**: `ruff check dusk/ bin/ tests/` — all checks passed.
-- **Plugin schema**: `omarchy plugin validate shell/dusk` — rc 0.
+- **Plugin schema**: `omarchy plugin validate .` — rc 0.
 - **Sandbox E2E**: fake `omarchy` CLI; verified startup apply, no-op when already active,
   `manual dark`→apply, `solar`/`scheduled`/`offsets` reload via socket, weather-coordinate
   solar path (sunset 20:21 BST for Poole on 2026-08-19), machine-readable `status --json`.
@@ -113,7 +125,7 @@ All steps verified:
 
 - `python3 -m unittest discover -s tests -v` — 75 tests passed.
 - `ruff check dusk bin tests` — passed.
-- `omarchy plugin validate shell/dusk` — passed.
+- `omarchy plugin validate .` — passed.
 - `bash -n install.sh` and `git diff --check` — passed.
-- Panel polish: `omarchy plugin validate shell/dusk`, `ruff check dusk bin tests`,
+- Panel polish: `omarchy plugin validate .`, `ruff check dusk bin tests`,
   and the 75-test suite passed.

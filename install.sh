@@ -43,7 +43,7 @@ sed -e "s|__DUSK_HOME__|$DUSK_HOME|g" -e "s|__PYTHON__|$PYTHON|g" \
 echo "  service:      $UNIT_DIR/dusk.service"
 
 mkdir -p "$PLUGIN_DIR"
-cp -a "$SCRIPT_DIR/shell/dusk/." "$PLUGIN_DIR/"
+cp -a "$SCRIPT_DIR/manifest.json" "$SCRIPT_DIR/Panel.qml" "$SCRIPT_DIR/Service.qml" "$SCRIPT_DIR/Icon.qml" "$PLUGIN_DIR/"
 echo "  widget:       $PLUGIN_DIR updated (enable with: omarchy plugin enable dusk right)"
 
 systemctl --user daemon-reload
