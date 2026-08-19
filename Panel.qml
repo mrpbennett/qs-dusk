@@ -103,8 +103,8 @@ Panel {
           ? "Applying your appearance choice..."
           : service.configured
             ? (service.desiredKind && service.appearanceLabel.toLowerCase() !== service.desiredKind
-              ? "Target: " + service.desiredKind + " · Next: " + service.nextTransitionText()
-              : "Next: " + service.nextTransitionText())
+              ? "Target: " + service.desiredKind
+              : "")
           : "Pick the themes below to start switching"
         foreground: root.foreground
         fontFamily: root.fontFamily
@@ -150,6 +150,25 @@ Panel {
             on: service.mode === "manual" && service.desiredKind === "dark"
             onPress: service.setMode("dark")
           }
+        }
+      }
+
+      ColumnLayout {
+        Layout.fillWidth: true
+        spacing: Style.space(4)
+        visible: service.configured
+
+        InfoRow {
+          label: "Schedule"
+          value: service.scheduleLabel
+        }
+        InfoRow {
+          label: "Next"
+          value: service.nextTransitionText()
+        }
+        InfoRow {
+          label: "Theme"
+          value: service.currentTheme !== "" ? service.currentTheme : "—"
         }
       }
 
@@ -228,6 +247,38 @@ Panel {
     opacity: service.busy ? 0.5 : 1
     enabled: !service.busy
     onClicked: modeBtn.press()
+  }
+
+  // ---- schedule/next/theme status rows ------------------------------------
+
+  component InfoRow: RowLayout {
+    id: infoRow
+
+    required property string label
+    required property string value
+
+    Layout.fillWidth: true
+    implicitHeight: Style.space(22)
+    spacing: Style.space(8)
+
+    Text {
+      text: infoRow.label
+      color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.68)
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.bodySmall
+    }
+
+    Item { Layout.fillWidth: true }
+
+    Text {
+      Layout.alignment: Qt.AlignRight
+      text: infoRow.value
+      color: root.foreground
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.bodySmall
+      horizontalAlignment: Text.AlignRight
+      elide: Text.ElideRight
+    }
   }
 
   // ---- inline expandable theme picker -----------------------------------------

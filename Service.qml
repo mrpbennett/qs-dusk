@@ -50,6 +50,23 @@ Item {
     if (mode === "manual") return "Manual"
     return "Unconfigured"
   }
+  readonly property string scheduleLabel: {
+    if (mode === "solar") return "Sunrise & sunset"
+    if (mode === "scheduled") return "Fixed times"
+    if (mode === "manual") return "Manual"
+    return "Unconfigured"
+  }
+
+  // Ticks once a minute purely so bindings that call nextTransitionText()
+  // recompute; nextTransition itself does not change between transitions.
+  property real _nowTick: Date.now()
+
+  Timer {
+    interval: 60000
+    repeat: true
+    running: true
+    onTriggered: root._nowTick = Date.now()
+  }
 
   signal stateLoaded()
 
@@ -127,7 +144,18 @@ Item {
     if (isNaN(iso.getTime())) return root.nextTransition
     var hh = iso.getHours()
     var mm = ("0" + iso.getMinutes()).slice(-2)
-    return root.nextTransitionKind + " at " + hh + ":" + mm
+    var kind = root.nextTransitionKind
+      ? root.nextTransitionKind.charAt(0).toUpperCase() + root.nextTransitionKind.slice(1)
+      : "Theme"
+    var diffMs = iso.getTime() - root._nowTick
+    return kind + " " + hh + ":" + mm + " · " + formatCountdown(diffMs)
+  }
+
+  function formatCountdown(diffMs) {
+    if (!(diffMs > 0)) return "due now"
+    var minutes = Math.floor(diffMs / 60000)
+    var hours = Math.floor(minutes / 60)
+    return hours > 0 ? "in " + hours + "h " + (minutes % 60) + "m" : "in " + Math.max(1, minutes) + "m"
   }
 
   Process {

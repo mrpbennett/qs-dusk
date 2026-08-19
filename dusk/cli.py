@@ -8,6 +8,7 @@ it works standalone.
 
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 from datetime import datetime
@@ -38,13 +39,22 @@ def _notify_daemon() -> bool:
         return False
 
 
-def _theme_available(slug: str, om: omarchy_mod.Omarchy) -> bool:
-    return om.theme_available(slug)
-
-
 def _require_daemon_or_warn(notified: bool) -> None:
     if not notified:
         print("note: scheduler is not running; the change applies on next start", file=sys.stderr)
+
+
+def _validate_or_fail(cfg: dict[str, Any], **kwargs: Any) -> bool:
+    errors = config_mod.validate_config(cfg, **kwargs)
+    if errors:
+        print("invalid config: " + "; ".join(errors), file=sys.stderr)
+        return False
+    return True
+
+
+def _save_and_notify(cfg: dict[str, Any]) -> None:
+    _save(cfg)
+    _require_daemon_or_warn(_notify_daemon())
 
 
 def _pretty_theme(slug: str | None) -> str:
@@ -185,12 +195,9 @@ def cmd_status(json_out: bool) -> int:
 def cmd_solar() -> int:
     cfg = _load()
     cfg["mode"] = "solar"
-    errors = config_mod.validate_config(cfg)
-    if errors:
-        print("invalid config: " + "; ".join(errors), file=sys.stderr)
+    if not _validate_or_fail(cfg):
         return EXIT_ERROR
-    _save(cfg)
-    _require_daemon_or_warn(_notify_daemon())
+    _save_and_notify(cfg)
     print("Mode: Solar")
     return EXIT_OK
 
@@ -203,12 +210,9 @@ def cmd_scheduled(light: str, dark: str) -> int:
         return EXIT_ERROR
     cfg["scheduled"] = {"light": light, "dark": dark}
     cfg["mode"] = "scheduled"
-    errors = config_mod.validate_config(cfg)
-    if errors:
-        print("invalid config: " + "; ".join(errors), file=sys.stderr)
+    if not _validate_or_fail(cfg):
         return EXIT_ERROR
-    _save(cfg)
-    _require_daemon_or_warn(_notify_daemon())
+    _save_and_notify(cfg)
     print(f"Mode: Scheduled (light {light}, dark {dark})")
     return EXIT_OK
 
@@ -220,9 +224,7 @@ def cmd_manual(kind: str) -> int:
     cfg = _load()
     cfg["manualTheme"] = kind
     cfg["mode"] = "manual"
-    errors = config_mod.validate_config(cfg)
-    if errors:
-        print("invalid config: " + "; ".join(errors), file=sys.stderr)
+    if not _validate_or_fail(cfg):
         return EXIT_ERROR
     _save(cfg)
 
@@ -249,13 +251,13 @@ def cmd_themes(light: str | None, dark: str | None) -> int:
     errors: list[str] = []
     if light is not None:
         light_slug = omarchy_mod.normalize_slug(light)
-        if not _theme_available(light_slug, om):
+        if not om.theme_available(light_slug):
             errors.append(f"light theme {light!r} is not installed")
         else:
             cfg["lightTheme"] = light_slug
     if dark is not None:
         dark_slug = omarchy_mod.normalize_slug(dark)
-        if not _theme_available(dark_slug, om):
+        if not om.theme_available(dark_slug):
             errors.append(f"dark theme {dark!r} is not installed")
         else:
             cfg["darkTheme"] = dark_slug
@@ -263,12 +265,9 @@ def cmd_themes(light: str | None, dark: str | None) -> int:
         print("; ".join(errors), file=sys.stderr)
         print("available themes: " + ", ".join(sorted(om.list_theme_slugs())), file=sys.stderr)
         return EXIT_ERROR
-    errors = config_mod.validate_config(cfg, theme_available=om.theme_available)
-    if errors:
-        print("invalid config: " + "; ".join(errors), file=sys.stderr)
+    if not _validate_or_fail(cfg, theme_available=om.theme_available):
         return EXIT_ERROR
-    _save(cfg)
-    _require_daemon_or_warn(_notify_daemon())
+    _save_and_notify(cfg)
     print(f"Theme pair: {cfg.get('lightTheme')} / {cfg.get('darkTheme')}")
     return EXIT_OK
 
@@ -327,8 +326,7 @@ def cmd_offsets(sunrise: str, sunset: str) -> int:
         "sunriseOffsetMinutes": sunrise_min,
         "sunsetOffsetMinutes": sunset_min,
     }
-    _save(cfg)
-    _require_daemon_or_warn(_notify_daemon())
+    _save_and_notify(cfg)
     print(f"Solar offsets: sunrise {sunrise_min:+d} min, sunset {sunset_min:+d} min")
     return EXIT_OK
 
@@ -358,65 +356,75 @@ Commands:
 """
 
 
+class _ArgumentError(Exception):
+    pass
+
+
+class _Parser(argparse.ArgumentParser):
+    def error(self, message: str) -> Any:  # pragma: no cover - trivial override
+        raise _ArgumentError(message)
+
+
+def _build_parser() -> _Parser:
+    parser = _Parser(prog="omarchy-auto-theme", add_help=False)
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    p_status = sub.add_parser("status", add_help=False)
+    p_status.add_argument("--json", action="store_true")
+
+    sub.add_parser("solar", add_help=False)
+    sub.add_parser("reload", add_help=False)
+
+    p_scheduled = sub.add_parser("scheduled", add_help=False)
+    p_scheduled.add_argument("--light", required=True, metavar="HH:MM")
+    p_scheduled.add_argument("--dark", required=True, metavar="HH:MM")
+
+    p_manual = sub.add_parser("manual", add_help=False)
+    p_manual.add_argument("kind", nargs="?", default="")
+
+    p_themes = sub.add_parser("themes", add_help=False)
+    p_themes.add_argument("--light")
+    p_themes.add_argument("--dark")
+    p_themes.add_argument("--json", action="store_true")
+
+    p_offsets = sub.add_parser("offsets", add_help=False)
+    p_offsets.add_argument("--sunrise", required=True, metavar="MIN")
+    p_offsets.add_argument("--sunset", required=True, metavar="MIN")
+
+    return parser
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv or argv[0] in ("help", "-h", "--help"):
         print(usage())
         return EXIT_OK
 
-    cmd, rest = argv[0], argv[1:]
+    try:
+        args = _build_parser().parse_args(argv)
+    except _ArgumentError as exc:
+        print(str(exc), file=sys.stderr)
+        return EXIT_ERROR
 
-    def option_value(flag: str) -> str | None:
-        if flag not in rest:
-            return None
-        index = rest.index(flag) + 1
-        return rest[index] if index < len(rest) else None
-
-    if cmd == "status":
-        return cmd_status("--json" in rest)
-
-    if cmd == "solar":
+    if args.command == "status":
+        return cmd_status(args.json)
+    if args.command == "solar":
         return cmd_solar()
-
-    if cmd == "scheduled":
-        light = option_value("--light")
-        dark = option_value("--dark")
-        if light is not None and dark is not None:
-            return cmd_scheduled(light, dark)
-        print("scheduled requires --light HH:MM --dark HH:MM", file=sys.stderr)
-        return EXIT_ERROR
-
-    if cmd == "manual":
-        return cmd_manual(rest[0] if rest else "")
-
-    if cmd == "themes":
-        if "--json" in rest:
-            return cmd_themes_list(True)
-        has_light = "--light" in rest
-        has_dark = "--dark" in rest
-        if not has_light and not has_dark:
-            return cmd_themes_list(False)
-        light = option_value("--light") if has_light else None
-        dark = option_value("--dark") if has_dark else None
-        if (has_light and light is None) or (has_dark and dark is None):
-            print("themes requires a slug after --light or --dark", file=sys.stderr)
-            return EXIT_ERROR
-        return cmd_themes(light, dark)
-
-    if cmd == "offsets":
-        sunrise = option_value("--sunrise")
-        sunset = option_value("--sunset")
-        if sunrise is not None and sunset is not None:
-            return cmd_offsets(sunrise, sunset)
-        print("offsets requires --sunrise MIN --sunset MIN", file=sys.stderr)
-        return EXIT_ERROR
-
-    if cmd == "reload":
+    if args.command == "reload":
         return cmd_reload()
+    if args.command == "scheduled":
+        return cmd_scheduled(args.light, args.dark)
+    if args.command == "manual":
+        return cmd_manual(args.kind)
+    if args.command == "offsets":
+        return cmd_offsets(args.sunrise, args.sunset)
 
-    print(f"unknown command {cmd!r}", file=sys.stderr)
-    print(usage(), file=sys.stderr)
-    return EXIT_ERROR
+    # args.command == "themes"
+    if args.json:
+        return cmd_themes_list(True)
+    if args.light is None and args.dark is None:
+        return cmd_themes_list(False)
+    return cmd_themes(args.light, args.dark)
 
 
 if __name__ == "__main__":
