@@ -1,0 +1,19 @@
+#!/usr/bin/env python3
+"""Dusk — automatic Omarchy theme switching. Scheduler daemon."""
+
+import logging
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
+
+from dusk import paths  # noqa: E402
+from dusk.scheduler import Scheduler  # noqa: E402
+
+if __name__ == "__main__":
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s dusk[%(levelname)s] %(message)s",
+        stream=sys.stderr,
+    )
+    Scheduler(socket_path=paths.socket_path()).run()

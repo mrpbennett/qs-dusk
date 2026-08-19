@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "id": "dusk",
+  "name": "Dusk",
+  "version": "1.0.0",
+  "author": "User",
+  "license": "MIT",
+  "description": "Automatic Omarchy theme switching (solar or scheduled) through omarchy theme set.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Dusk",
+    "description": "Switch your whole Omarchy desktop between light and dark themes automatically. Shows the active appearance as text (Light/Dark/Automatic) and drives the omarchy-auto-theme scheduler.",
+    "category": "System",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "refreshIntervalSec": 30
+    },
+    "schema": [
+      {
+        "key": "refreshIntervalSec",
+        "type": "integer",
+        "label": "Status refresh (seconds)",
+        "min": 5,
+        "max": 600,
+        "step": 5,
+        "defaultValue": 30
+      }
+    ]
+  }
+}
