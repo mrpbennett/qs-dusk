@@ -71,6 +71,13 @@ Solar mode reads the coordinates already stored by Omarchy's weather widget. If
 they are unavailable or invalid, Dusk uses the configured scheduled fallback and
 reports that fact in `status` instead of silently guessing.
 
+### Configuration Ownership
+
+Dusk writes preferences only after an explicit `omarchy-auto-theme` command or
+bar-widget choice. Its unattended scheduler writes only Dusk-owned runtime
+state. Omarchy's current-theme and weather files are read-only inputs, and Dusk
+never edits `shell.json`, theme files, or application configuration directly.
+
 The scheduler reads only the state it needs and stores its own data separately:
 
 | Path | Purpose |
@@ -78,6 +85,23 @@ The scheduler reads only the state it needs and stores its own data separately:
 | `~/.config/omarchy/dusk/config.json` | Preferences and schedule |
 | `~/.local/state/omarchy/dusk/state.json` | Scheduler status and last successful change |
 | `$XDG_RUNTIME_DIR/dusk/control.sock` | CLI and widget control channel |
+
+## Remove Dusk
+
+The following removes the bar widget, scheduler, commands, configuration, and
+saved Dusk state. It does not remove either of the Omarchy themes you selected.
+
+```sh
+omarchy plugin disable mrpbennett.dusk
+omarchy plugin remove mrpbennett.dusk --yes
+
+systemctl --user disable --now dusk.service
+rm -f ~/.config/systemd/user/dusk.service
+rm -f ~/.local/bin/omarchy-auto-theme ~/.local/bin/dusk-scheduler
+rm -rf ~/.local/lib/dusk ~/.config/omarchy/dusk ~/.local/state/omarchy/dusk
+rm -rf "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/dusk"
+systemctl --user daemon-reload
+```
 
 ## Documentation
 
