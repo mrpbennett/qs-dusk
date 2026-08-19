@@ -87,7 +87,6 @@ Panel {
     owner: root
     bar: root.bar
     open: root.opened
-    centerOnBar: true
     contentWidth: panel.fittedContentWidth(Style.space(352))
     contentHeight: panel.fittedContentHeight(content.implicitHeight)
 
