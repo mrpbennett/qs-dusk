@@ -34,6 +34,19 @@ Dark / Automatic from the bar. Automatic normally uses sunrise and sunset from
 your Omarchy weather location. Existing fixed schedules remain available through
 the CLI and are preserved when Automatic is selected in the panel.
 
+### Keybindings (optional)
+
+If you prefer the keyboard over the bar, add these to
+`~/.config/hypr/bindings.lua`:
+
+```lua
+o.bind("SUPER + SHIFT + ALT + Z", "Dusk: Auto mode", "omarchy-auto-theme solar")
+o.bind("SUPER + SHIFT + ALT + L", "Dusk: Light mode", "omarchy-auto-theme manual light")
+o.bind("SUPER + SHIFT + ALT + D", "Dusk: Dark mode", "omarchy-auto-theme manual dark")
+```
+
+`SUPER + SHIFT + ALT + Z` avoids conflicts with stock Omarchy bindings.
+
 ## Configure
 
 First pick your theme pair. Use slugs as shown by `omarchy theme list`

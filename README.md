@@ -54,6 +54,18 @@ omarchy-auto-theme manual dark
 Use `omarchy-auto-theme status` to see the selected mode, current theme, next
 transition, and any solar fallback reason.
 
+### Keybindings
+
+To switch modes from the keyboard, add these to `~/.config/hypr/bindings.lua`:
+
+```lua
+o.bind("SUPER + SHIFT + ALT + Z", "Dusk: Auto mode", "omarchy-auto-theme solar")
+o.bind("SUPER + SHIFT + ALT + L", "Dusk: Light mode", "omarchy-auto-theme manual light")
+o.bind("SUPER + SHIFT + ALT + D", "Dusk: Dark mode", "omarchy-auto-theme manual dark")
+```
+
+`SUPER + SHIFT + ALT + Z` avoids conflicts with stock Omarchy bindings.
+
 ## How It Works
 
 1. The CLI saves your theme pair and scheduling preferences to Dusk's config.
