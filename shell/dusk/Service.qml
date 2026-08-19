@@ -35,13 +35,13 @@ Item {
 
   readonly property string appearanceLabel: {
     if (!configured) return "Not configured"
-    if (desiredKind === "light") return "Light"
-    if (desiredKind === "dark") return "Dark"
-    return "Auto"
+    if (currentTheme === lightTheme) return "Light"
+    if (currentTheme === darkTheme) return "Dark"
+    return "Other theme active"
   }
   readonly property string iconKind: {
-    if (desiredKind === "light") return "light"
-    if (desiredKind === "dark") return "dark"
+    if (currentTheme === lightTheme) return "light"
+    if (currentTheme === darkTheme) return "dark"
     return "auto"
   }
   readonly property string modeLabel: {
@@ -53,11 +53,17 @@ Item {
 
   signal stateLoaded()
 
+  function commandFor(args) {
+    // Quickshell may not inherit ~/.local/bin. DUSK_CLI permits an explicit
+    // override while the installer default remains usable in a fresh session.
+    return ["/bin/sh", "-c", "exec \"${DUSK_CLI:-$HOME/.local/bin/omarchy-auto-theme}\" \"$@\"", "dusk"].concat(args)
+  }
+
   function refresh() {
     if (statusProcess.running) return
     _statusOutput = ""
     _statusError = ""
-    statusProcess.command = ["omarchy-auto-theme", "status", "--json"]
+    statusProcess.command = commandFor(["status", "--json"])
     statusProcess.running = true
   }
 
@@ -65,22 +71,26 @@ Item {
     if (themesProcess.running) return
     _themesOutput = ""
     _themesError = ""
-    themesProcess.command = ["omarchy-auto-theme", "themes", "--json"]
+    themesProcess.command = commandFor(["themes", "--json"])
     themesProcess.running = true
   }
 
   function runAction(args) {
     if (actionProcess.running) return
+    busy = true
     _actionOutput = ""
     _actionError = ""
-    actionProcess.command = ["omarchy-auto-theme"].concat(args)
+    actionProcess.command = commandFor(args)
     actionProcess.running = true
   }
 
   // ---- mode + theme selection, delegated to the scheduler CLI -------------
 
   function setMode(kind) {
-    if (kind === "auto") runAction(["solar"])
+    if (kind === "auto") {
+      // A saved fixed schedule is already automatic; do not replace it.
+      if (mode !== "scheduled") runAction(["solar"])
+    }
     else if (kind === "light") runAction(["manual", "light"])
     else if (kind === "dark") runAction(["manual", "dark"])
   }
@@ -178,8 +188,19 @@ Item {
       if (exitCode !== 0) root.lastError = root._actionError.trim() !== "" ? root._actionError : "dusk action failed"
       else root.lastError = ""
       // Actions change config; refresh reflects the scheduler's decision.
-      Qt.callLater(function() { root.refresh(); root.refreshThemes() })
+      Qt.callLater(function() { root.refresh(); root.refreshThemes(); followUpRefresh.restart() })
     }
+  }
+
+  Timer {
+    id: followUpRefresh
+    interval: 1500
+    onTriggered: root.refresh()
+  }
+
+  Component.onCompleted: {
+    refresh()
+    refreshThemes()
   }
 
   onStateLoaded: {

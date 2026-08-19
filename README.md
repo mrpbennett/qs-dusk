@@ -3,8 +3,8 @@
 Automatic Omarchy theme switching — solar or scheduled — through the native
 `omarchy theme set` path. A user-level scheduler plus optional bar widget.
 
-- [Design](design.md)
-- [Usage](usage.md)
+- [Design](docs/design.md)
+- [Usage](docs/usage.md)
 
 ```
 ~/.config/omarchy/dusk/config.json        preferences

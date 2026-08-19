@@ -36,6 +36,7 @@ def new_state() -> dict[str, Any]:
         "lastError": None,
         "lastSuccess": None,
         "failuresSinceSuccess": 0,
+        "retryTheme": None,
         "updatedAt": None,
     }
 

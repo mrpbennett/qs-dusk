@@ -32,11 +32,6 @@ Panel {
     return isNaN(n) ? 30 : Math.max(5, Math.min(600, n))
   }
 
-  readonly property real selectListHeight:
-    Math.min(Math.max(service.themeOptions.length, 0), 7) * Style.space(30) + Style.spacing.labelGap
-  readonly property real expandedHeight:
-    (lightSelect.expanded || darkSelect.expanded) ? root.selectListHeight : 0
-
   Service {
     id: service
     settings: root.settings
@@ -48,7 +43,6 @@ Panel {
     running: true
     onTriggered: {
       service.refresh()
-      service.refreshThemes()
     }
   }
 
@@ -85,7 +79,7 @@ Panel {
     }
   }
 
-  // ---- panel: mode buttons + inline theme pickers ------------------------------
+  // ---- panel: appearance controls + theme pairing ------------------------------
 
   KeyboardPanel {
     id: panel
@@ -94,19 +88,24 @@ Panel {
     bar: root.bar
     open: root.opened
     centerOnBar: true
-    contentWidth: panel.fittedContentWidth(Style.space(340))
-    contentHeight: panel.fittedContentHeight(Style.space(380) + root.expandedHeight)
+    contentWidth: panel.fittedContentWidth(Style.space(352))
+    contentHeight: panel.fittedContentHeight(content.implicitHeight)
 
     ColumnLayout {
+      id: content
       anchors.fill: parent
-      spacing: Style.space(10)
+      spacing: Style.space(12)
 
       PanelHero {
         Layout.fillWidth: true
         title: "Dusk"
         meta: service.configured ? service.appearanceLabel + " · " + service.modeLabel : "Not configured"
-        detail: service.configured
-          ? "Next: " + service.nextTransitionText()
+        detail: service.busy
+          ? "Applying your appearance choice..."
+          : service.configured
+            ? (service.desiredKind && service.appearanceLabel.toLowerCase() !== service.desiredKind
+              ? "Target: " + service.desiredKind + " · Next: " + service.nextTransitionText()
+              : "Next: " + service.nextTransitionText())
           : "Pick the themes below to start switching"
         foreground: root.foreground
         fontFamily: root.fontFamily
@@ -121,71 +120,88 @@ Panel {
         }
       }
 
-      RowLayout {
+      ColumnLayout {
         Layout.fillWidth: true
         spacing: Style.space(6)
 
-        ModeButton {
-          label: "Auto"
-          on: service.mode === "solar" || service.mode === "scheduled"
-          onPress: service.setMode("auto")
+        Text {
+          text: "Appearance"
+          color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.68)
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          font.bold: true
         }
-        ModeButton {
-          label: "Light"
-          on: service.mode === "manual" && service.desiredKind === "light"
-          onPress: service.setMode("light")
-        }
-        ModeButton {
-          label: "Dark"
-          on: service.mode === "manual" && service.desiredKind === "dark"
-          onPress: service.setMode("dark")
+
+        RowLayout {
+          Layout.fillWidth: true
+          spacing: Style.space(6)
+
+          ModeButton {
+            label: "Auto"
+            on: service.mode === "solar" || service.mode === "scheduled"
+            onPress: service.setMode("auto")
+          }
+          ModeButton {
+            label: "Light"
+            on: service.mode === "manual" && service.desiredKind === "light"
+            onPress: service.setMode("light")
+          }
+          ModeButton {
+            label: "Dark"
+            on: service.mode === "manual" && service.desiredKind === "dark"
+            onPress: service.setMode("dark")
+          }
         }
       }
 
-      ThemeSelect {
-        id: lightSelect
-        label: "Light theme"
-        value: service.lightTheme
-        options: service.themeOptions
-        onChosen: function(v) { service.setLightTheme(v) }
+      ColumnLayout {
+        Layout.fillWidth: true
+        spacing: Style.space(8)
+
+        Text {
+          text: "Theme pairing"
+          color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.68)
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          font.bold: true
+        }
+
+        ThemeSelect {
+          id: lightSelect
+          label: "Light theme"
+          value: service.lightTheme
+          options: service.themeOptions
+          onExpandedChanged: if (expanded) darkSelect.expanded = false
+          onChosen: function(v) { service.setLightTheme(v) }
+        }
+
+        ThemeSelect {
+          id: darkSelect
+          label: "Dark theme"
+          value: service.darkTheme
+          options: service.themeOptions
+          onExpandedChanged: if (expanded) lightSelect.expanded = false
+          onChosen: function(v) { service.setDarkTheme(v) }
+        }
       }
 
-      ThemeSelect {
-        id: darkSelect
-        label: "Dark theme"
-        value: service.darkTheme
-        options: service.themeOptions
-        onChosen: function(v) { service.setDarkTheme(v) }
-      }
-
-      Text {
+      StatusNotice {
         Layout.fillWidth: true
         visible: service.solarUnavailable !== ""
-        text: "Fallback: " + service.solarUnavailable
-        color: Qt.darker(root.foreground, 1.55)
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.bodySmall
-        wrapMode: Text.WordWrap
+        text: "Using fallback times: " + service.solarUnavailable
       }
 
-      Text {
+      StatusNotice {
         Layout.fillWidth: true
         visible: service.lastError !== ""
-        text: "Error: " + service.lastError
-        color: Qt.rgba(1, 0.4, 0.4, 1)
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.bodySmall
-        wrapMode: Text.WordWrap
+        text: service.lastError
+        error: true
       }
 
-      Text {
+      StatusNotice {
         Layout.fillWidth: true
         visible: !service.daemonRunning
-        text: "Scheduler is not running"
-        color: Qt.darker(root.foreground, 1.55)
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.bodySmall
-        wrapMode: Text.WordWrap
+        text: "Scheduler is not running. Changes apply when it starts."
       }
     }
   }
@@ -200,16 +216,20 @@ Panel {
     signal press()
 
     Layout.fillWidth: true
-    implicitHeight: Style.space(34)
+    implicitHeight: Style.space(40)
+    opacity: service.busy ? 0.5 : 1
 
     Rectangle {
       anchors.fill: parent
       radius: Style.cornerRadius
-      color: modeBtn.on ? Qt.rgba(root.activeColor.r, root.activeColor.g, root.activeColor.b, 0.16) : "transparent"
+      color: modeBtn.on ? Qt.rgba(root.activeColor.r, root.activeColor.g, root.activeColor.b, 0.18)
+        : mouse.containsMouse ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.07) : "transparent"
       border.width: 1
       border.color: modeBtn.on
         ? Qt.rgba(root.activeColor.r, root.activeColor.g, root.activeColor.b, 0.5)
         : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.10)
+      Behavior on color { ColorAnimation { duration: 120 } }
+      Behavior on border.color { ColorAnimation { duration: 120 } }
     }
 
     Text {
@@ -224,10 +244,15 @@ Panel {
     }
 
     MouseArea {
+      id: mouse
       anchors.fill: parent
+      enabled: !service.busy
       hoverEnabled: true
+      activeFocusOnTab: true
       cursorShape: Qt.PointingHandCursor
       onClicked: modeBtn.press()
+      Keys.onReturnPressed: modeBtn.press()
+      Keys.onSpacePressed: modeBtn.press()
     }
   }
 
@@ -244,6 +269,7 @@ Panel {
 
     Layout.fillWidth: true
     implicitHeight: body.implicitHeight
+    opacity: service.busy ? 0.5 : 1
 
     readonly property string currentLabel: {
       for (var i = 0; i < themeSelect.options.length; i++) {
@@ -260,7 +286,7 @@ Panel {
 
       Text {
         text: themeSelect.label
-        color: Qt.darker(root.foreground, 1.4)
+        color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.68)
         font.family: root.fontFamily
         font.pixelSize: Style.font.caption
         font.bold: true
@@ -269,11 +295,16 @@ Panel {
       Rectangle {
         id: trigger
         width: parent.width
-        height: Style.space(34)
+        height: Style.space(40)
         radius: Style.cornerRadius
-        color: themeSelect.expanded ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.10) : "transparent"
+        color: themeSelect.expanded ? Qt.rgba(root.activeColor.r, root.activeColor.g, root.activeColor.b, 0.12)
+          : triggerMouse.containsMouse ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.07) : "transparent"
         border.width: 1
-        border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
+        border.color: themeSelect.expanded
+          ? Qt.rgba(root.activeColor.r, root.activeColor.g, root.activeColor.b, 0.48)
+          : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
+        Behavior on color { ColorAnimation { duration: 120 } }
+        Behavior on border.color { ColorAnimation { duration: 120 } }
 
         Text {
           anchors.left: parent.left
@@ -302,9 +333,15 @@ Panel {
         }
 
         MouseArea {
+          id: triggerMouse
           anchors.fill: parent
+          enabled: !service.busy
+          hoverEnabled: true
+          activeFocusOnTab: true
           cursorShape: Qt.PointingHandCursor
           onClicked: themeSelect.expanded = !themeSelect.expanded
+          Keys.onReturnPressed: themeSelect.expanded = !themeSelect.expanded
+          Keys.onSpacePressed: themeSelect.expanded = !themeSelect.expanded
         }
       }
 
@@ -312,7 +349,7 @@ Panel {
         id: list
         visible: themeSelect.expanded
         width: parent.width
-        height: visible ? Math.min(column.implicitHeight, Style.space(30) * 7) : 0
+        height: visible ? Math.min(column.implicitHeight, Style.space(38) * 7) : 0
         contentHeight: column.implicitHeight
         clip: true
         boundsBehavior: Flickable.StopAtBounds
@@ -329,11 +366,12 @@ Panel {
               required property var modelData
 
               width: parent.width
-              height: Style.space(30)
+              height: Style.space(38)
               radius: Style.cornerRadius - 2
               color: String(modelData.value) === themeSelect.value
                 ? Qt.rgba(root.activeColor.r, root.activeColor.g, root.activeColor.b, 0.14)
-                : "transparent"
+                : itemMouse.containsMouse ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.07) : "transparent"
+              Behavior on color { ColorAnimation { duration: 100 } }
 
               Text {
                 anchors.left: parent.left
@@ -350,10 +388,21 @@ Panel {
               }
 
               MouseArea {
+                id: itemMouse
                 anchors.fill: parent
+                enabled: !service.busy
                 hoverEnabled: true
+                activeFocusOnTab: true
                 cursorShape: Qt.PointingHandCursor
                 onClicked: {
+                  themeSelect.chosen(String(modelData.value))
+                  themeSelect.expanded = false
+                }
+                Keys.onReturnPressed: {
+                  themeSelect.chosen(String(modelData.value))
+                  themeSelect.expanded = false
+                }
+                Keys.onSpacePressed: {
                   themeSelect.chosen(String(modelData.value))
                   themeSelect.expanded = false
                 }
@@ -362,6 +411,36 @@ Panel {
           }
         }
       }
+    }
+  }
+
+  component StatusNotice: Rectangle {
+    id: notice
+
+    required property string text
+    property bool error: false
+
+    implicitHeight: message.implicitHeight + Style.space(18)
+    radius: Style.cornerRadius
+    color: notice.error
+      ? Qt.rgba(1, 0.28, 0.28, 0.10)
+      : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06)
+    border.width: 1
+    border.color: notice.error
+      ? Qt.rgba(1, 0.36, 0.36, 0.42)
+      : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.10)
+
+    Text {
+      id: message
+      anchors.left: parent.left
+      anchors.right: parent.right
+      anchors.verticalCenter: parent.verticalCenter
+      anchors.margins: Style.space(9)
+      text: notice.text
+      color: notice.error ? Qt.rgba(1, 0.52, 0.52, 1) : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.74)
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.bodySmall
+      wrapMode: Text.WordWrap
     }
   }
 }

@@ -184,10 +184,17 @@ class Scheduler:
         current = self.omarchy.current_theme()
         self.state["currentTheme"] = current
 
+        # A failure belongs to one target theme. The next scheduled target must
+        # get its own retry budget rather than inheriting a previous failure.
+        if self.state.get("retryTheme") != desired:
+            self.state["failuresSinceSuccess"] = 0
+            self.state["retryTheme"] = desired
+
         if desired == current:
             self.state["appliedTheme"] = desired
             self.state["lastError"] = None
             self.state["failuresSinceSuccess"] = 0
+            self.state["retryTheme"] = None
             self.logger.info("theme %r already active; no-op", desired)
             return
 
@@ -203,6 +210,7 @@ class Scheduler:
             self.state["lastSuccess"] = now_iso(self.now_fn())
             self.state["lastError"] = None
             self.state["failuresSinceSuccess"] = 0
+            self.state["retryTheme"] = None
         else:
             self.state["failuresSinceSuccess"] = self.state.get("failuresSinceSuccess", 0) + 1
             detail = (result.stderr or result.stdout or f"exit code {result.returncode}").strip()

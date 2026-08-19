@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
-  "id": "dusk",
+  "id": "mrpbennett.dusk",
   "name": "Dusk",
   "version": "1.0.0",
-  "author": "User",
+  "author": "Paul Bennett",
   "license": "MIT",
   "description": "Automatic Omarchy theme switching (solar or scheduled) through omarchy theme set.",
   "kinds": [
@@ -14,7 +14,7 @@
   },
   "barWidget": {
     "displayName": "Dusk",
-    "description": "Switch your whole Omarchy desktop between light and dark themes automatically. Shows the active appearance as text (Light/Dark/Automatic) and drives the omarchy-auto-theme scheduler.",
+    "description": "Switch your whole Omarchy desktop between light and dark themes automatically, and select the theme used for each appearance.",
     "category": "System",
     "allowMultiple": false,
     "defaultSection": "right",

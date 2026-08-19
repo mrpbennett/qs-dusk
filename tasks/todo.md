@@ -2,7 +2,24 @@
 
 ## Status
 
-Complete. All 72 tests pass, ruff clean, installed and live on this machine.
+Refinement complete. Existing saved scheduled configurations are preserved;
+the normal panel flow is a reliable Auto / Light / Dark controller with a
+polished, keyboard-operable panel.
+
+## Refinement Plan
+
+- [x] Fix automatic-mode and retry recovery correctness.
+- [x] Make daemon-down status and malformed CLI input reliable.
+- [x] Polish panel initialization, truthful appearance state, action feedback,
+  and mutually exclusive theme dropdowns.
+- [x] Make the installed widget able to locate its CLI and receive updates.
+- [x] Add regression coverage; run tests, lint, and plugin validation.
+
+## Panel Polish Plan
+
+- [x] Refine hierarchy, state language, interaction targets, and feedback.
+- [x] Make panel height follow its content, including expanded lists/notices.
+- [x] Add keyboard activation and validate the plugin.
 
 ## Goal
 
@@ -91,3 +108,12 @@ All steps verified:
 
 - Enable the bar widget: `omarchy plugin enable dusk right` (files already at
   `~/.config/omarchy/plugins/dusk`).
+
+## Refinement Review
+
+- `python3 -m unittest discover -s tests -v` — 75 tests passed.
+- `ruff check dusk bin tests` — passed.
+- `omarchy plugin validate shell/dusk` — passed.
+- `bash -n install.sh` and `git diff --check` — passed.
+- Panel polish: `omarchy plugin validate shell/dusk`, `ruff check dusk bin tests`,
+  and the 75-test suite passed.

@@ -1,5 +1,7 @@
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 
 import dusk.paths as paths_mod
@@ -69,6 +71,32 @@ class CliTest(unittest.TestCase):
 
         state_mod.save_state(state_mod.new_state(), self.state_path)
         self.assertEqual(cli.cmd_status(json_out=True), 0)
+
+    def test_status_daemon_down_uses_current_manual_preferences(self):
+        ipc.ControlClient = DownClient
+        write_config(
+            self.config_path,
+            {"mode": "manual", "manualTheme": "dark", "lightTheme": LIGHT, "darkTheme": DARK},
+        )
+        from dusk import state as state_mod
+
+        stale = state_mod.new_state()
+        stale.update({"mode": "scheduled", "desiredKind": "light", "desiredTheme": LIGHT})
+        state_mod.save_state(stale, self.state_path)
+        output = StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(cli.cmd_status(json_out=True), 0)
+        self.assertIn('"mode": "manual"', output.getvalue())
+        self.assertIn('"desiredTheme": "catppuccin"', output.getvalue())
+
+    def test_missing_option_value_returns_usage_error(self):
+        for args in (
+            ["scheduled", "--light", "07:00", "--dark"],
+            ["themes", "--light"],
+            ["offsets", "--sunrise", "0", "--sunset"],
+        ):
+            with self.subTest(args=args):
+                self.assertEqual(cli.main(args), 1)
 
     def test_scheduled_rejects_equal_times(self):
         rc = cli.cmd_scheduled("07:00", "07:00")

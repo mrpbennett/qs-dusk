@@ -42,13 +42,9 @@ sed -e "s|__DUSK_HOME__|$DUSK_HOME|g" -e "s|__PYTHON__|$PYTHON|g" \
   "$SCRIPT_DIR/systemd/dusk.service.tpl" > "$UNIT_DIR/dusk.service"
 echo "  service:      $UNIT_DIR/dusk.service"
 
-if [[ -e $PLUGIN_DIR ]]; then
-  echo "  widget:       $PLUGIN_DIR exists — keeping your copy (re-install it manually to update)"
-else
-  mkdir -p "$(dirname "$PLUGIN_DIR")"
-  cp -a "$SCRIPT_DIR/shell/dusk" "$PLUGIN_DIR"
-  echo "  widget:       $PLUGIN_DIR (enable with: omarchy plugin enable dusk right)"
-fi
+mkdir -p "$PLUGIN_DIR"
+cp -a "$SCRIPT_DIR/shell/dusk/." "$PLUGIN_DIR/"
+echo "  widget:       $PLUGIN_DIR updated (enable with: omarchy plugin enable dusk right)"
 
 systemctl --user daemon-reload
 systemctl --user enable dusk.service

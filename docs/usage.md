@@ -28,8 +28,10 @@ Restart your graphical session (or `systemctl --user start dusk`) once.
 omarchy plugin enable dusk right
 ```
 
-The widget shows the appearance and mode with text (Light/Dark/Automatic) plus
-an icon, and lets you switch Light / Dark / Automatic from the bar.
+The widget shows the current appearance with an icon and lets you switch Light /
+Dark / Automatic from the bar. Automatic normally uses sunrise and sunset from
+your Omarchy weather location. Existing fixed schedules remain available through
+the CLI and are preserved when Automatic is selected in the panel.
 
 ## Configure
 

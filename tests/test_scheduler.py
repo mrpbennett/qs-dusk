@@ -124,6 +124,26 @@ class SchedulerApplyTest(unittest.TestCase):
         st = state_mod.load_state(s.state_path)
         self.assertEqual(st["failuresSinceSuccess"], before)
 
+    def test_retry_budget_resets_for_next_transition(self):
+        om = FakeOmarchy(installed=[LIGHT, DARK], current="gruvbox", fail_on=[LIGHT])
+        s = make_scheduler(
+            self.tmp.name,
+            now=at(2026, 8, 19, 10, 0),
+            omarchy=om,
+            mode="scheduled",
+        )
+        for _ in range(5):
+            s.recompute()
+
+        # The evening transition targets dark, which must not inherit light's
+        # exhausted retry budget.
+        s.now_fn = lambda: at(2026, 8, 19, 20, 0)
+        s.recompute()
+        st = state_mod.load_state(s.state_path)
+        self.assertEqual(om.applied, [DARK])
+        self.assertEqual(st["failuresSinceSuccess"], 0)
+        self.assertIsNone(st["retryTheme"])
+
     def test_manual_mode_applies_selected_theme(self):
         om = FakeOmarchy(installed=[LIGHT, DARK], current="gruvbox")
         s = make_scheduler(self.tmp.name, now=at(2026, 8, 19, 10, 0), omarchy=om, mode="manual")

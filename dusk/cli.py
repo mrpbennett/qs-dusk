@@ -93,6 +93,28 @@ def cmd_status(json_out: bool) -> int:
         daemon_state = state_mod.load_state(paths.state_file())
         daemon_state["daemonRunning"] = False
 
+        # Persisted state describes the last daemon run, not newly saved
+        # preferences. Do not present it as current while the daemon is down.
+        if cfg.get("mode") == "manual":
+            kind = cfg.get("manualTheme")
+            desired_theme = cfg.get("lightTheme") if kind == "light" else cfg.get("darkTheme")
+        else:
+            kind = None
+            desired_theme = None
+        daemon_state.update(
+            {
+                "configured": bool(cfg.get("lightTheme") and cfg.get("darkTheme")),
+                "mode": cfg.get("mode"),
+                "desiredKind": kind,
+                "desiredTheme": desired_theme,
+                "nextTransition": None,
+                "nextTransitionKind": None,
+                "location": None,
+                "locationSource": None,
+                "solarUnavailable": None,
+            }
+        )
+
     merged = {
         "daemonRunning": daemon_running,
         "configured": bool(daemon_state.get("configured")),
@@ -344,6 +366,12 @@ def main(argv: list[str] | None = None) -> int:
 
     cmd, rest = argv[0], argv[1:]
 
+    def option_value(flag: str) -> str | None:
+        if flag not in rest:
+            return None
+        index = rest.index(flag) + 1
+        return rest[index] if index < len(rest) else None
+
     if cmd == "status":
         return cmd_status("--json" in rest)
 
@@ -351,9 +379,9 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_solar()
 
     if cmd == "scheduled":
-        if "--light" in rest and "--dark" in rest:
-            light = rest[rest.index("--light") + 1]
-            dark = rest[rest.index("--dark") + 1]
+        light = option_value("--light")
+        dark = option_value("--dark")
+        if light is not None and dark is not None:
             return cmd_scheduled(light, dark)
         print("scheduled requires --light HH:MM --dark HH:MM", file=sys.stderr)
         return EXIT_ERROR
@@ -368,14 +396,17 @@ def main(argv: list[str] | None = None) -> int:
         has_dark = "--dark" in rest
         if not has_light and not has_dark:
             return cmd_themes_list(False)
-        light = rest[rest.index("--light") + 1] if has_light else None
-        dark = rest[rest.index("--dark") + 1] if has_dark else None
+        light = option_value("--light") if has_light else None
+        dark = option_value("--dark") if has_dark else None
+        if (has_light and light is None) or (has_dark and dark is None):
+            print("themes requires a slug after --light or --dark", file=sys.stderr)
+            return EXIT_ERROR
         return cmd_themes(light, dark)
 
     if cmd == "offsets":
-        if "--sunrise" in rest and "--sunset" in rest:
-            sunrise = rest[rest.index("--sunrise") + 1]
-            sunset = rest[rest.index("--sunset") + 1]
+        sunrise = option_value("--sunrise")
+        sunset = option_value("--sunset")
+        if sunrise is not None and sunset is not None:
             return cmd_offsets(sunrise, sunset)
         print("offsets requires --sunrise MIN --sunset MIN", file=sys.stderr)
         return EXIT_ERROR
