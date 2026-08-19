@@ -3,7 +3,7 @@
 #
 # Copies the scheduler into ~/.local/lib/dusk, symlinks the CLI and daemon into
 # ~/.local/bin, installs the systemd user unit for the graphical session, and
-# copies the optional Quickshell bar widget into ~/.config/omarchy/plugins/dusk.
+# copies the optional Quickshell bar widget into ~/.config/omarchy/plugins/mrpbennett.dusk.
 #
 # Usage: ./install.sh
 
@@ -13,7 +13,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DUSK_HOME="${DUSK_HOME:-$HOME/.local/lib/dusk}"
 BIN_DIR="${BIN_DIR:-$HOME/.local/bin}"
 UNIT_DIR="${UNIT_DIR:-$HOME/.config/systemd/user}"
-PLUGIN_DIR="${PLUGIN_DIR:-$HOME/.config/omarchy/plugins/dusk}"
+PLUGIN_DIR="${PLUGIN_DIR:-$HOME/.config/omarchy/plugins/mrpbennett.dusk}"
 
 # A python3 interpreter that always exists for the systemd unit (the CLI uses
 # `env python3` from the user's PATH instead).
@@ -44,7 +44,7 @@ echo "  service:      $UNIT_DIR/dusk.service"
 
 mkdir -p "$PLUGIN_DIR"
 cp -a "$SCRIPT_DIR/manifest.json" "$SCRIPT_DIR/Panel.qml" "$SCRIPT_DIR/Service.qml" "$SCRIPT_DIR/Icon.qml" "$PLUGIN_DIR/"
-echo "  widget:       $PLUGIN_DIR updated (enable with: omarchy plugin enable dusk right)"
+echo "  widget:       $PLUGIN_DIR updated (enable with: omarchy plugin enable mrpbennett.dusk right)"
 
 systemctl --user daemon-reload
 systemctl --user enable dusk.service

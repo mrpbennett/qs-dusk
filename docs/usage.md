@@ -18,14 +18,15 @@ configs, backgrounds, or hooks.
 This copies the scheduler into `~/.local/lib/dusk`, symlinks
 `~/.local/bin/omarchy-auto-theme` and `~/.local/bin/dusk-scheduler`, installs
 the `dusk.service` user unit, enables it for the graphical session, and copies
-the `dusk` bar-widget plugin into `~/.config/omarchy/plugins/dusk`.
+the `mrpbennett.dusk` bar-widget plugin into
+`~/.config/omarchy/plugins/mrpbennett.dusk`.
 
 Restart your graphical session (or `systemctl --user start dusk`) once.
 
 ### Bar widget (optional)
 
 ```sh
-omarchy plugin enable dusk right
+omarchy plugin enable mrpbennett.dusk right
 ```
 
 The widget shows the current appearance with an icon and lets you switch Light /
