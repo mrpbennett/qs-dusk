@@ -206,9 +206,11 @@ Panel {
     }
   }
 
-  // ---- toggle-style mode button -----------------------------------------------
+  // ---- mode selector -----------------------------------------------------------
 
-  component ModeButton: Item {
+  // Match Omarchy's provider selector: the shared Button renders its selected
+  // state from the neutral control tokens instead of the urgent status color.
+  component ModeButton: Button {
     id: modeBtn
 
     required property string label
@@ -217,43 +219,16 @@ Panel {
 
     Layout.fillWidth: true
     implicitHeight: Style.space(40)
+    text: modeBtn.label
+    selected: modeBtn.on
+    bordered: true
+    focusable: true
+    foreground: root.foreground
+    fontFamily: root.fontFamily
+    fontSize: Style.font.body
     opacity: service.busy ? 0.5 : 1
-
-    Rectangle {
-      anchors.fill: parent
-      radius: Style.cornerRadius
-      color: modeBtn.on ? Qt.rgba(root.activeColor.r, root.activeColor.g, root.activeColor.b, 0.18)
-        : mouse.containsMouse ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.07) : "transparent"
-      border.width: 1
-      border.color: modeBtn.on
-        ? Qt.rgba(root.activeColor.r, root.activeColor.g, root.activeColor.b, 0.5)
-        : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.10)
-      Behavior on color { ColorAnimation { duration: 120 } }
-      Behavior on border.color { ColorAnimation { duration: 120 } }
-    }
-
-    Text {
-      anchors.centerIn: parent
-      text: modeBtn.label
-      color: modeBtn.on ? root.activeColor : Qt.darker(root.foreground, 1.35)
-      font.family: root.fontFamily
-      font.pixelSize: Style.font.body
-      font.bold: modeBtn.on
-      horizontalAlignment: Text.AlignHCenter
-      verticalAlignment: Text.AlignVCenter
-    }
-
-    MouseArea {
-      id: mouse
-      anchors.fill: parent
-      enabled: !service.busy
-      hoverEnabled: true
-      activeFocusOnTab: true
-      cursorShape: Qt.PointingHandCursor
-      onClicked: modeBtn.press()
-      Keys.onReturnPressed: modeBtn.press()
-      Keys.onSpacePressed: modeBtn.press()
-    }
+    enabled: !service.busy
+    onClicked: modeBtn.press()
   }
 
   // ---- inline expandable theme picker -----------------------------------------

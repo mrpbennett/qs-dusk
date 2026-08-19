@@ -1,11 +1,8 @@
 import QtQuick
-import QtQuick.Shapes
 import qs.Commons
 
-// A toggle-switch glyph drawn locally: a pill track whose dark side fills from
-// the right and a knob that sits at the boundary. Light = empty track, knob
-// left; Dark = filled track, knob right; Auto = half filled, knob centered.
-// Deliberately not a sun/moon so it never reads as a weather icon.
+// A compact celestial glyph: sun for Light, crescent for Dark, and a split
+// day/night dial for Auto. Each state has a distinct silhouette at bar scale.
 Item {
   id: root
 
@@ -18,18 +15,11 @@ Item {
   onKindChanged: canvas.requestPaint()
   onColorChanged: canvas.requestPaint()
 
-  function roundedRectPath(ctx, x, y, w, h, r) {
+  function line(ctx, x1, y1, x2, y2) {
     ctx.beginPath()
-    ctx.moveTo(x + r, y)
-    ctx.lineTo(x + w - r, y)
-    ctx.arc(x + w - r, y + r, r, -Math.PI / 2, 0)
-    ctx.lineTo(x + w, y + h - r)
-    ctx.arc(x + w - r, y + h - r, r, 0, Math.PI / 2)
-    ctx.lineTo(x + r, y + h)
-    ctx.arc(x + r, y + h - r, r, Math.PI / 2, Math.PI)
-    ctx.lineTo(x, y + r)
-    ctx.arc(x + r, y + r, r, Math.PI, Math.PI * 1.5)
-    ctx.closePath()
+    ctx.moveTo(x1, y1)
+    ctx.lineTo(x2, y2)
+    ctx.stroke()
   }
 
   Canvas {
@@ -42,42 +32,66 @@ Item {
       var ctx = getContext("2d")
       var w = width
       var h = height
-      var trackH = h * 0.42
-      var trackY = (h - trackH) / 2
-      var trackR = trackH / 2
-      var knobD = Math.max(h * 0.72, trackH * 1.35)
-      var knobR = knobD / 2
+      var size = Math.min(w, h)
+      var cx = w / 2
+      var cy = h / 2
+      var stroke = Math.max(1.25, size * 0.105)
 
       ctx.reset()
       ctx.clearRect(0, 0, w, h)
-
-      // Fraction of the track filled from the right (the "dark" side).
-      var frac = root.kind === "dark" ? 1 : (root.kind === "light" ? 0 : 0.5)
-
-      // Track outline.
       ctx.strokeStyle = root.color
-      ctx.lineWidth = Math.max(1, h * 0.07)
-      ctx.globalAlpha = 0.45
-      root.roundedRectPath(ctx, 0, trackY, w, trackH, trackR)
-      ctx.stroke()
-
-      // Filled dark side.
-      if (frac > 0) {
-        ctx.save()
-        root.roundedRectPath(ctx, 0, trackY, w, trackH, trackR)
-        ctx.clip()
-        ctx.fillStyle = root.color
-        ctx.globalAlpha = 0.55
-        ctx.fillRect(w * frac, trackY, w * (1 - frac), trackH)
-        ctx.restore()
-      }
-
-      // Knob at the light/dark boundary.
-      ctx.globalAlpha = 1
       ctx.fillStyle = root.color
-      ctx.beginPath()
-      ctx.arc(frac * (w - knobD) + knobD / 2, h / 2, knobR, 0, Math.PI * 2)
-      ctx.fill()
+      ctx.lineWidth = stroke
+      ctx.lineCap = "round"
+
+      if (root.kind === "light") {
+        var sunRadius = size * 0.19
+        var rayStart = size * 0.31
+        var rayEnd = size * 0.43
+
+        ctx.beginPath()
+        ctx.arc(cx, cy, sunRadius, 0, Math.PI * 2)
+        ctx.stroke()
+
+        for (var i = 0; i < 8; i++) {
+          var angle = i * Math.PI / 4
+          root.line(ctx,
+                    cx + Math.cos(angle) * rayStart,
+                    cy + Math.sin(angle) * rayStart,
+                    cx + Math.cos(angle) * rayEnd,
+                    cy + Math.sin(angle) * rayEnd)
+        }
+      } else if (root.kind === "dark") {
+        var moonRadius = size * 0.31
+
+        // Cut the overlapping disc out of the filled moon for a clean crescent.
+        ctx.save()
+        ctx.beginPath()
+        ctx.arc(cx - size * 0.04, cy, moonRadius, 0, Math.PI * 2)
+        ctx.fill()
+        ctx.globalCompositeOperation = "destination-out"
+        ctx.beginPath()
+        ctx.arc(cx + size * 0.17, cy - size * 0.06, moonRadius, 0, Math.PI * 2)
+        ctx.fill()
+        ctx.restore()
+      } else {
+        var dialRadius = size * 0.32
+
+        ctx.beginPath()
+        ctx.arc(cx, cy, dialRadius, 0, Math.PI * 2)
+        ctx.stroke()
+
+        ctx.save()
+        ctx.beginPath()
+        ctx.arc(cx, cy, dialRadius - stroke / 2, 0, Math.PI * 2)
+        ctx.clip()
+        ctx.globalAlpha = 0.32
+        ctx.fillRect(cx, cy - dialRadius, dialRadius, dialRadius * 2)
+        ctx.restore()
+
+        ctx.globalAlpha = 0.75
+        root.line(ctx, cx, cy - dialRadius + stroke, cx, cy + dialRadius - stroke)
+      }
     }
   }
 }
