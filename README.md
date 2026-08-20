@@ -1,6 +1,6 @@
 # Dusk
 
-![dusk](./assets/dusk.png)
+![dusk](preview.png)
 
 Automatically switch your complete Omarchy desktop between light and dark
 themes. Dusk follows sunrise and sunset when location data is available, falls
