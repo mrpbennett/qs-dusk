@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "mrpbennett.dusk",
   "name": "Dusk",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": "Paul Bennett",
   "license": "MIT",
   "description": "Automatic Omarchy theme switching (solar or scheduled) through omarchy theme set.",

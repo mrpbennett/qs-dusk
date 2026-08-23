@@ -70,13 +70,15 @@ Item {
 
   signal stateLoaded()
 
-  // Absolute path of the plugin folder, derived from where this file loads.
-  // Used to locate the bundled scheduler/CLI and to run dusk-bootstrap.
-  readonly property string pluginDir: {
-    var path = String(Qt.resolvedUrl(".") || "")
-    if (path.indexOf("file://") === 0) path = path.substring(7)
-    try { path = decodeURIComponent(path) } catch (err) {}
-    return path
+  // Install orchestration lives in Bootstrap.qml; this item reflects daemon
+  // state and writes intent through the CLI only.
+  Bootstrap {
+    id: bootstrap
+    onInstalled: {
+      root.refresh()
+      root.refreshThemes()
+    }
+    onFailed: function(message) { root.lastError = message }
   }
 
   function commandFor(args) {
@@ -85,22 +87,7 @@ Item {
     return ["/bin/sh", "-c", "exec \"${DUSK_CLI:-$HOME/.local/bin/omarchy-auto-theme}\" \"$@\"", "dusk"].concat(args)
   }
 
-  // Self-bootstrap: the first time the widget loads without an
-  // omarchy-auto-theme CLI on PATH, run the bundled dusk-bootstrap to symlink
-  // the CLI, write the dusk.service user unit (pointing at this plugin
-  // folder), and start the scheduler. Everything afterwards goes through the
-  // CLI, so a successful bootstrap needs no further setup or scripts.
-  function ensureInstalled() {
-    if (setupProbe.running || bootstrapProcess.running) return
-    setupProbe.command = ["/bin/sh", "-c", "test -x \"$HOME/.local/bin/omarchy-auto-theme\""]
-    setupProbe.running = true
-  }
-
-  function finishSetup() {
-    root.refresh()
-    root.refreshThemes()
-  }
-
+  // Reflect the daemon by running `status --json` through the CLI.
   function refresh() {
     if (statusProcess.running) return
     _statusOutput = ""
@@ -245,43 +232,10 @@ Item {
     }
   }
 
-  Process {
-    id: setupProbe
-    running: false
-    command: []
-    onExited: function(exitCode) {
-      if (exitCode !== 0) {
-        bootstrapProcess.command = [root.pluginDir + "/bin/dusk-bootstrap"]
-        bootstrapProcess.running = true
-      } else {
-        root.finishSetup()
-      }
-    }
-  }
-
-  Process {
-    id: bootstrapProcess
-    running: false
-    command: []
-    stdout: StdioCollector { id: bootstrapStdout; waitForEnd: true }
-    stderr: StdioCollector { id: bootstrapStderr; waitForEnd: true }
-    onExited: function(exitCode) {
-      if (exitCode !== 0) {
-        var err = bootstrapStderr.text.trim()
-        root.lastError = err !== "" ? err : "dusk bootstrap failed"
-      }
-      root.finishSetup()
-    }
-  }
-
   Timer {
     id: followUpRefresh
     interval: 1500
     onTriggered: root.refresh()
-  }
-
-  Component.onCompleted: {
-    ensureInstalled()
   }
 
   onStateLoaded: {

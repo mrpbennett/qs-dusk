@@ -1,9 +1,12 @@
 """The Dusk scheduler daemon.
 
-Owns the decision loop: recompute the desired theme and next transition,
-apply through `omarchy theme set` when needed, then wait for the single next
-transition (or a reload/resume signal). All I/O that matters (clock, zone,
-location, Omarchy) is injectable so the engine is testable without a desktop.
+Owns the decision loop as a tick engine: each :meth:`Scheduler.tick` advances
+the engine one step — recompute the desired theme and next transition, apply
+through `omarchy theme set` when needed, persist state, and report how long
+the pump should wait. :meth:`Scheduler.run` is only a pump: it wires wakes
+(socket requests, signals, timeouts) into ticks. All I/O that matters (clock,
+zone, location, Omarchy) is injectable so the engine is testable without a
+desktop.
 """
 
 from __future__ import annotations
@@ -20,6 +23,7 @@ from typing import Any
 from . import config, ipc, paths, schedule
 from . import omarchy as omarchy_mod
 from . import state as state_mod
+from .engine import apply_and_record
 
 log = logging.getLogger("dusk")
 
@@ -83,20 +87,37 @@ class Scheduler:
                 except OSError:
                     pass
 
-        signal.signal(signal.SIGTERM, handler)
-        signal.signal(signal.SIGINT, handler)
-        signal.signal(signal.SIGUSR1, handler)
+        # signal.signal only works in the main thread; a background-thread
+        # run() (tests) installs no handlers and is stopped via _stop.
+        try:
+            signal.signal(signal.SIGTERM, handler)
+            signal.signal(signal.SIGINT, handler)
+            signal.signal(signal.SIGUSR1, handler)
+        except ValueError:
+            self.logger.debug("signal handlers unavailable off the main thread")
 
     def run(self) -> None:
+        """Pump: tick, wait for the next wake, repeat.
+
+        Contract with ``ControlServer.poll``: it returns after the first
+        ready round (a client request or the signal wake pipe) or at
+        timeout. Any handled request — including a plain ``status`` — is
+        therefore followed by a fresh tick, which is what makes a
+        ``reload`` recompute promptly instead of waiting out the wait.
+        """
         self._install_signals()
         try:
             while not self._stop:
-                self.recompute()
+                wait = self.tick()
                 if self._stop:
                     break
-                wait = self.compute_wait()
                 if self.server is not None:
-                    self.server.poll(wait, handler=self._request_handler)
+                    handled = self.server.poll(wait, handler=self._request_handler)
+                    self.logger.debug(
+                        "woke after %.1fs: %s",
+                        wait,
+                        [request.get("cmd") for request in handled],
+                    )
                 else:
                     time.sleep(min(wait, 1.0))
         finally:
@@ -127,7 +148,15 @@ class Scheduler:
 
     # ---- decision loop ----------------------------------------------------
 
-    def recompute(self) -> schedule.Decision:
+    def tick(self) -> float:
+        """Advance the engine one step and return seconds until the next wake.
+
+        Loads config once, resolves the :class:`~dusk.schedule.Decision` for
+        *now*, syncs runtime state, applies the desired theme when configured
+        and healthy, persists state, then computes the wait: capped at
+        ``MAX_WAIT_SECONDS`` (daily re-evaluation absorbs resume/clock jumps)
+        and shortened to the retry interval while a failure is pending.
+        """
         now = self.now_fn()
         tz = self.tz_fn()
         location = self.location_provider()
@@ -139,9 +168,9 @@ class Scheduler:
         if cfg_warning and decision.ok:
             decision.errors.append(cfg_warning)
 
-        self._sync_state_from_config(cfg, decision, now, location)
+        self.state = self.state.synced_from(decision, location, now)
         if decision.configured and decision.desiredTheme and decision.ok:
-            self._apply(decision)
+            self._apply(cfg, decision)
         self._persist_state()
 
         if not decision.ok:
@@ -154,93 +183,50 @@ class Scheduler:
             self.logger.info(
                 "mode=%s desired=%s next=%s", decision.mode, decision.desiredTheme, nxt_txt
             )
-        return decision
+        return self._next_wait(now, decision, cfg)
 
-    def compute_wait(self) -> float:
-        """Seconds until the next scheduled wake, capped and retry-aware."""
-        now = self.now_fn()
+    def _next_wait(self, now: datetime, decision: schedule.Decision, cfg: dict[str, Any]) -> float:
+        """Seconds until the next scheduled wake, capped and retry-aware.
+
+        Uses the live ``decision.nextTransition``; the ISO string in
+        ``state["nextTransition"]`` exists only for persistence.
+        """
         seconds = MAX_WAIT_SECONDS
-        nxt = self.state.get("nextTransition")
-        if nxt:
-            try:
-                nxt_dt = datetime.fromisoformat(nxt)
-                if nxt_dt.tzinfo is None:
-                    nxt_dt = nxt_dt.replace(tzinfo=self.tz_fn())
-                seconds = (nxt_dt - now).total_seconds()
-            except ValueError:
-                seconds = MAX_WAIT_SECONDS
+        nxt = decision.nextTransition
+        if nxt is not None:
+            if nxt.tzinfo is None:
+                nxt = nxt.replace(tzinfo=self.tz_fn())
+            seconds = (nxt - now).total_seconds()
         seconds = max(1.0, min(seconds, MAX_WAIT_SECONDS))
 
-        failures = int(self.state.get("failuresSinceSuccess", 0))
-        if failures > 0:
-            retries_left = self._retries_left()
-            if retries_left > 0:
-                retry_seconds = self._retry_interval()
-                seconds = min(seconds, retry_seconds)
+        failures = self.state.failures_since_success
+        if failures > 0 and int(cfg.get("maxRetries", 5)) - failures > 0:
+            seconds = min(seconds, float(cfg.get("retryIntervalSeconds", 120)))
         return seconds
 
-    def _apply(self, decision: schedule.Decision) -> None:
+    def _apply(self, cfg: dict[str, Any], decision: schedule.Decision) -> None:
         desired = decision.desiredTheme
-        current = self.omarchy.current_theme()
-        self.state["currentTheme"] = current
+        if not desired:
+            return
 
-        # A failure belongs to one target theme. The next scheduled target must
-        # get its own retry budget rather than inheriting a previous failure.
-        if self.state.get("retryTheme") != desired:
-            self.state["failuresSinceSuccess"] = 0
-            self.state["retryTheme"] = desired
+        self.state, outcome = apply_and_record(
+            self.state,
+            self.omarchy,
+            desired,
+            now=self.now_fn(),
+            max_retries=int(cfg.get("maxRetries", 5)),
+        )
 
-        if desired == current:
-            self.state["appliedTheme"] = desired
-            self.state["lastError"] = None
-            self.state["failuresSinceSuccess"] = 0
-            self.state["retryTheme"] = None
+        if outcome.noop:
             self.logger.info("theme %r already active; no-op", desired)
             return
-
-        if self._retries_left() is not None and self._retries_left() <= 0:
+        if outcome.exhausted:
             self.logger.warning("giving up on theme %r until the next transition", desired)
             return
-
-        self.logger.info("applying theme %r via `omarchy theme set`", desired)
-        result = self.omarchy.apply_theme(desired)
-        if result.success:
-            self.state["appliedTheme"] = desired
-            self.state["currentTheme"] = desired
-            self.state["lastSuccess"] = now_iso(self.now_fn())
-            self.state["lastError"] = None
-            self.state["failuresSinceSuccess"] = 0
-            self.state["retryTheme"] = None
-        else:
-            self.state["failuresSinceSuccess"] = self.state.get("failuresSinceSuccess", 0) + 1
-            detail = (result.stderr or result.stdout or f"exit code {result.returncode}").strip()
-            self.state["lastError"] = f"omarchy theme set {desired!r} failed: {detail[:400]}"
-            self.logger.error("%s", self.state["lastError"])
-
-    def _sync_state_from_config(
-        self,
-        cfg: dict[str, Any],
-        decision: schedule.Decision,
-        now: datetime,
-        location: tuple[float, float] | None,
-    ) -> None:
-        state = self.state
-        state["configured"] = decision.configured and decision.ok
-        state["mode"] = decision.mode
-        state["desiredKind"] = decision.desiredKind
-        state["desiredTheme"] = decision.desiredTheme
-        state["nextTransition"] = (
-            decision.nextTransition.isoformat() if decision.nextTransition else None
-        )
-        state["nextTransitionKind"] = decision.nextTransitionKind
-        state["solarUnavailable"] = decision.solarUnavailable
-        state["location"] = None
-        state["locationSource"] = decision.locationSource
-        if location is not None:
-            state["location"] = {"latitude": location[0], "longitude": location[1]}
-        if decision.ok or not decision.configured and not state.get("appliedTheme"):
-            state["lastError"] = None
-        state["updatedAt"] = now_iso(now)
+        if outcome.attempted:
+            self.logger.info("applying theme %r via `omarchy theme set`", desired)
+        if self.state.last_error:
+            self.logger.error("%s", self.state.last_error)
 
     def _persist_state(self) -> None:
         try:
@@ -250,24 +236,7 @@ class Scheduler:
 
     # ---- helpers ----------------------------------------------------------
 
-    def _retry_interval(self) -> float:
-        cfg, _ = config.load_config(self.config_path)
-        return float(cfg.get("retryIntervalSeconds", 120))
-
-    def _retries_left(self) -> int | None:
-        cfg, _ = config.load_config(self.config_path)
-        max_retries = int(cfg.get("maxRetries", 5))
-        failures = int(self.state.get("failuresSinceSuccess", 0))
-        return max_retries - failures
-
     def status_snapshot(self) -> dict[str, Any]:
-        snapshot = dict(self.state)
+        snapshot = self.state.as_dict()
         snapshot["daemonRunning"] = True
-        snapshot["updatedAt"] = self.state.get("updatedAt")
         return snapshot
-
-
-def now_iso(dt: datetime) -> str:
-    if dt.tzinfo is None:
-        dt = dt.astimezone()
-    return dt.isoformat()

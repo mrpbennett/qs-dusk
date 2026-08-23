@@ -62,6 +62,12 @@ class ControlServer:
         `handler` is an optional callable `request -> response dict` (or None
         for no reply). Returns the list of handled requests, including a
         synthetic `{"cmd": "__signal"}` entry when the wake pipe fired.
+
+        Contract: poll returns after the FIRST ready round of events or at
+        the timeout, whichever comes first — it never keeps waiting just
+        because events arrived. Callers that must react to a request (e.g.
+        the scheduler pump re-ticking on `reload`) rely on this prompt
+        return; do not loop internally until the deadline.
         """
         handled: list[dict[str, Any]] = []
         deadline = None

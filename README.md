@@ -68,7 +68,8 @@ omarchy-auto-theme manual dark
 ```
 
 Use `omarchy-auto-theme status` to see the selected mode, current theme, next
-transition, and any solar fallback reason.
+transition, and any solar fallback reason. `manual light|dark` reports when the
+requested theme is already active instead of re-running Omarchy's theme switch.
 
 ### Keybindings
 
@@ -141,9 +142,9 @@ systemctl --user daemon-reload
 
 - `python3` (standard library only — no pip packages) runs the CLI and
   scheduler.
-- The scheduler and CLI shell out only to Omarchy itself (`omarchy theme
-  set`, and reading Omarchy's weather file for solar coordinates); Dusk
-  makes no network calls of its own.
+- The scheduler and CLI speak to Omarchy only through its `omarchy theme`
+  commands (set, list, dir) and read-only access to Omarchy's own state files;
+  Dusk makes no network calls of its own.
 - `systemd --user` runs the `dusk.service` unit.
 - No non-stdlib QML imports in the bar widget.
 

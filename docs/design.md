@@ -105,23 +105,36 @@ day/night by solar-noon altitude; never raises for extreme latitudes.
 
 ## Apply / no-op / failure
 
-1. Read current theme slug from `~/.local/state/omarchy/current/theme.name`.
-2. If it equals the desired slug → record no-op; do **not** call Omarchy.
-3. Otherwise run `omarchy theme set <slug>` (argv list, no shell), wait for it
-   to finish, capture exit code. In-flight transitions are serialized because
-   the daemon is single-threaded and blocks until the call completes.
-4. On success: record `appliedTheme` + `lastSuccess`, clear error. On failure:
-   keep the last successful state, record `lastError`, and retry after
-   `retryIntervalSeconds` up to `maxRetries` times, then wait for the next
-   schedule event or a reload.
+One shared **apply engine** (`dusk/engine.py`) turns a desired slug into a
+recorded outcome, for both the daemon's tick and the CLI's standalone manual
+path:
 
-A manual `omarchy theme set` outside dusk is respected: because the daemon
+1. Read current theme slug from `~/.local/state/omarchy/current/theme.name`.
+2. If the retry target changed, reset the per-target retry budget.
+3. If it equals the desired slug → record no-op; do **not** call Omarchy.
+4. Otherwise, if the retry budget for this target is spent (`maxRetries`),
+   withhold until the next transition or a reload.
+5. Run `omarchy theme set <slug>` (argv list, no shell), wait for it to
+   finish, capture exit code. In-flight transitions are serialized because
+   the daemon is single-threaded and blocks until the call completes.
+6. On success: record `appliedTheme` + `lastSuccess`, clear error. On
+   failure: keep the last successful state, record `lastError`, and retry
+   after `retryIntervalSeconds` up to `maxRetries` times.
+
+The interactive `manual` command skips budgeting (`maxRetries` off): it
+reports its result instead, including an explicit "already active" no-op when
+the requested theme is current.
+
+A manual `omarchy theme set` outside dusk is respected: because the engine
 compares against the *observed* current theme, the next recompute re-applies the
 desired theme only when the mode is automatic.
 
 ## Control socket
 
 Line-delimited JSON over a unix socket in `$XDG_RUNTIME_DIR/dusk/`.
-`status` returns the full state snapshot; `reload` triggers a recompute.
+`status` returns the full state snapshot — the same document `state.json`
+holds, plus a live echo of the config's theme pair; keys are owned by
+DuskState's wire format alone. `reload` triggers a recompute.
 The CLI falls back to reading files if the daemon is unreachable; `manual`
-may then apply directly through `omarchy theme set` so it works standalone.
+may then apply directly through the apply engine, recording the outcome
+in `state.json` via the same DuskState rules, so it works standalone.

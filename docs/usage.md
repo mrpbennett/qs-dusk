@@ -61,6 +61,10 @@ omarchy-auto-theme scheduled --light 07:00 --dark 19:00
 omarchy-auto-theme manual light                   # apply once, stop automatic switching
 ```
 
+`manual` reports when the requested theme is already active instead of running
+`omarchy theme set` again; if the scheduler daemon is not running, the command
+still applies the theme itself so manual mode works standalone.
+
 Adjust solar timing and fallback:
 
 ```sh
@@ -90,6 +94,10 @@ Location: Omarchy weather coordinates
 
 Error and fallback conditions always show up in status (e.g. `Fallback:
 weather coordinates unavailable — using 07:00/19:00`).
+
+`status --json` emits the scheduler's full state record (the same document
+stored in `state.json`) plus the live theme pair, so scripts and widgets can
+consume one stable schema whether or not the daemon is running.
 
 ## Service
 

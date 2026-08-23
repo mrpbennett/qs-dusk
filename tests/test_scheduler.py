@@ -59,12 +59,12 @@ class SchedulerApplyTest(unittest.TestCase):
             omarchy=om,
             mode="scheduled",
         )
-        s.recompute()
+        s.tick()
         self.assertEqual(om.applied, [LIGHT])  # exactly one native call
         st = state_mod.load_state(s.state_path)
-        self.assertEqual(st["appliedTheme"], LIGHT)
-        self.assertEqual(st["desiredTheme"], LIGHT)
-        self.assertIsNone(st["lastError"])
+        self.assertEqual(st.applied_theme, LIGHT)
+        self.assertEqual(st.desired_theme, LIGHT)
+        self.assertIsNone(st.last_error)
 
     def test_noop_when_already_current(self):
         om = FakeOmarchy(installed=[LIGHT, DARK], current=LIGHT)
@@ -74,10 +74,10 @@ class SchedulerApplyTest(unittest.TestCase):
             omarchy=om,
             mode="scheduled",
         )
-        s.recompute()
+        s.tick()
         self.assertEqual(om.applied, [])  # no native call for a no-op
         st = state_mod.load_state(s.state_path)
-        self.assertEqual(st["appliedTheme"], LIGHT)
+        self.assertEqual(st.applied_theme, LIGHT)
 
     def test_failed_apply_keeps_last_success_and_retries(self):
         om = FakeOmarchy(installed=[LIGHT, DARK], current="gruvbox", fail_once=True)
@@ -87,19 +87,19 @@ class SchedulerApplyTest(unittest.TestCase):
             omarchy=om,
             mode="scheduled",
         )
-        s.recompute()
+        s.tick()
         st = state_mod.load_state(s.state_path)
-        self.assertIsNotNone(st["lastError"])
-        self.assertEqual(st["failuresSinceSuccess"], 1)
-        self.assertNotEqual(st["appliedTheme"], LIGHT)  # last success preserved
+        self.assertIsNotNone(st.last_error)
+        self.assertEqual(st.failures_since_success, 1)
+        self.assertNotEqual(st.applied_theme, LIGHT)  # last success preserved
 
         # Retry after the retry interval elapses (late wake).
         s.now_fn = lambda: at(2026, 8, 19, 10, 3)  # +3m > retryInterval 120s
-        s.recompute()
+        s.tick()
         st = state_mod.load_state(s.state_path)
-        self.assertEqual(st["lastError"], None)
-        self.assertEqual(st["appliedTheme"], LIGHT)
-        self.assertEqual(st["failuresSinceSuccess"], 0)
+        self.assertEqual(st.last_error, None)
+        self.assertEqual(st.applied_theme, LIGHT)
+        self.assertEqual(st.failures_since_success, 0)
 
     def test_retries_exhausted_stops(self):
         om = FakeOmarchy(installed=[LIGHT, DARK], current="gruvbox", fail_on=[LIGHT])
@@ -110,19 +110,19 @@ class SchedulerApplyTest(unittest.TestCase):
             mode="scheduled",
         )
         for _ in range(5):
-            s.recompute()
+            s.tick()
             s.now_fn = lambda: at(2026, 8, 19, 10, 0)  # same wall clock, retry backoff
         attempts = len([x for x in om.applied])
         self.assertEqual(attempts, 0)  # never applied; all failed
         st = state_mod.load_state(s.state_path)
-        self.assertEqual(st["failuresSinceSuccess"], 5)
+        self.assertEqual(st.failures_since_success, 5)
 
-        # Further recomputes stop trying until a real transition.
-        before = st["failuresSinceSuccess"]
+        # Further ticks stop trying until a real transition.
+        before = st.failures_since_success
         s.now_fn = lambda: at(2026, 8, 19, 12, 0)
-        s.recompute()
+        s.tick()
         st = state_mod.load_state(s.state_path)
-        self.assertEqual(st["failuresSinceSuccess"], before)
+        self.assertEqual(st.failures_since_success, before)
 
     def test_retry_budget_resets_for_next_transition(self):
         om = FakeOmarchy(installed=[LIGHT, DARK], current="gruvbox", fail_on=[LIGHT])
@@ -133,50 +133,49 @@ class SchedulerApplyTest(unittest.TestCase):
             mode="scheduled",
         )
         for _ in range(5):
-            s.recompute()
+            s.tick()
 
         # The evening transition targets dark, which must not inherit light's
         # exhausted retry budget.
         s.now_fn = lambda: at(2026, 8, 19, 20, 0)
-        s.recompute()
+        s.tick()
         st = state_mod.load_state(s.state_path)
         self.assertEqual(om.applied, [DARK])
-        self.assertEqual(st["failuresSinceSuccess"], 0)
-        self.assertIsNone(st["retryTheme"])
+        self.assertEqual(st.failures_since_success, 0)
+        self.assertIsNone(st.retry_theme)
 
     def test_manual_mode_applies_selected_theme(self):
         om = FakeOmarchy(installed=[LIGHT, DARK], current="gruvbox")
         s = make_scheduler(self.tmp.name, now=at(2026, 8, 19, 10, 0), omarchy=om, mode="manual")
-        s.state["mode"] = "manual"
         from dusk import config as config_mod
 
         cfg, _ = config_mod.load_config(s.config_path)
         cfg["mode"] = "manual"
         cfg["manualTheme"] = "dark"
         config_mod.save_config(cfg, s.config_path)
-        s.recompute()
+        s.tick()
         self.assertEqual(om.applied, [DARK])
         st = state_mod.load_state(s.state_path)
-        self.assertEqual(st["desiredTheme"], DARK)
+        self.assertEqual(st.desired_theme, DARK)
 
     def test_late_wake_catches_missed_transition(self):
         om = FakeOmarchy(installed=[LIGHT, DARK], current=None)
         s = make_scheduler(self.tmp.name, now=at(2026, 8, 19, 20, 0), omarchy=om, mode="scheduled")
-        s.recompute()
+        s.tick()
         self.assertEqual(om.applied, [DARK])
         # Clock jumps past the next sunrise while asleep.
         s.now_fn = lambda: at(2026, 8, 20, 8, 0)
-        s.recompute()
+        s.tick()
         self.assertEqual(om.applied, [DARK, LIGHT])
 
     def test_external_theme_change_reapplies_desired(self):
         om = FakeOmarchy(installed=[LIGHT, DARK], current=None)
         s = make_scheduler(self.tmp.name, now=at(2026, 8, 19, 20, 0), omarchy=om, mode="scheduled")
-        s.recompute()
+        s.tick()
         self.assertEqual(om.applied, [DARK])
         # A user runs `omarchy theme set gruvbox` outside dusk.
         om.current = "gruvbox"
-        s.recompute()
+        s.tick()
         self.assertEqual(om.applied, [DARK, DARK])
 
     def test_timezone_jump_changes_decision(self):
@@ -195,19 +194,19 @@ class SchedulerApplyTest(unittest.TestCase):
             socket_path=None,
             logger=scheduler_mod.log,
         )
-        s.recompute()
+        s.tick()
         self.assertEqual(om.applied, [LIGHT])
         # Timezone changes (travel): local 12:00 in Tokyo is 04:00 in London.
         holder["tz"] = TZ_TOKYO
         s.now_fn = lambda: at(2026, 8, 19, 12, 0, tz=holder["tz"])
-        s.recompute()
+        s.tick()
         # Tokyo 12:00 -> no scheduled change, still light in both? 12:00 local is
         # between 07:00 and 19:00 in either zone, so theme stays light.
         self.assertEqual(om.applied, [LIGHT])
         # Jump to a local time that flips the decision.
         holder["tz"] = TZ_TOKYO
         s.now_fn = lambda: at(2026, 8, 19, 21, 0, tz=holder["tz"])
-        s.recompute()
+        s.tick()
         self.assertEqual(om.applied, [LIGHT, DARK])
 
 
@@ -233,11 +232,11 @@ class SchedulerStateTest(unittest.TestCase):
             socket_path=None,
             logger=scheduler_mod.log,
         )
-        s.recompute()
+        s.tick()
         self.assertEqual(om.applied, [])
         st = state_mod.load_state(state_path)
-        self.assertFalse(st["configured"])
-        self.assertIsNone(st["desiredTheme"])
+        self.assertFalse(st.configured)
+        self.assertIsNone(st.desired_theme)
 
     def test_invalid_config_no_apply_and_error_recorded(self):
         config_path = Path(self.tmp.name) / "config.json"
@@ -257,11 +256,10 @@ class SchedulerStateTest(unittest.TestCase):
             socket_path=None,
             logger=scheduler_mod.log,
         )
-        decision = s.recompute()
+        s.tick()
         self.assertEqual(om.applied, [])
-        self.assertFalse(decision.ok)
         st = state_mod.load_state(state_path)
-        self.assertFalse(st["configured"])
+        self.assertFalse(st.configured)
 
     def test_solar_fallback_recorded(self):
         s = make_scheduler(
@@ -270,11 +268,11 @@ class SchedulerStateTest(unittest.TestCase):
             location=None,
             mode="solar",
         )
-        s.recompute()
+        s.tick()
         st = state_mod.load_state(s.state_path)
-        self.assertEqual(st["desiredKind"], "dark")
-        self.assertIsNotNone(st["solarUnavailable"])
-        self.assertIn("coordinates", st["solarUnavailable"])
+        self.assertEqual(st.desired_kind, "dark")
+        self.assertIsNotNone(st.solar_unavailable)
+        self.assertIn("coordinates", st.solar_unavailable)
 
     def test_solar_with_weather_location(self):
         om = FakeOmarchy(installed=[LIGHT, DARK], current=None)
@@ -285,12 +283,12 @@ class SchedulerStateTest(unittest.TestCase):
             omarchy=om,
             mode="solar",
         )
-        s.recompute()
+        s.tick()
         self.assertEqual(om.applied, [LIGHT])
         st = state_mod.load_state(s.state_path)
-        self.assertEqual(st["locationSource"], "weather")
-        self.assertEqual(st["location"]["latitude"], 50.71429)
-        self.assertIsNone(st["solarUnavailable"])
+        self.assertEqual(st.location_source, "weather")
+        self.assertEqual(st.location["latitude"], 50.71429)
+        self.assertIsNone(st.solar_unavailable)
 
     def test_polar_day_no_transition(self):
         tz = ZoneInfo("Arctic/Longyearbyen")
@@ -308,12 +306,12 @@ class SchedulerStateTest(unittest.TestCase):
             socket_path=None,
             logger=scheduler_mod.log,
         )
-        s.recompute()
+        wait = s.tick()
         self.assertEqual(om.applied, [LIGHT])
-        self.assertEqual(s.compute_wait(), scheduler_mod.MAX_WAIT_SECONDS)
+        self.assertEqual(wait, scheduler_mod.MAX_WAIT_SECONDS)
 
 
-class ComputeWaitTest(unittest.TestCase):
+class NextWakeTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
 
@@ -322,16 +320,14 @@ class ComputeWaitTest(unittest.TestCase):
 
     def test_waits_until_next_transition(self):
         s = make_scheduler(self.tmp.name, now=at(2026, 8, 19, 10, 0), mode="scheduled")
-        s.recompute()
-        wait = s.compute_wait()
+        wait = s.tick()
         self.assertGreater(wait, 8 * 3600 - 2)
         self.assertLessEqual(wait, 9 * 3600)
 
     def test_retry_shortens_wait(self):
         om = FakeOmarchy(installed=[LIGHT, DARK], current="gruvbox", fail_on=[LIGHT])
         s = make_scheduler(self.tmp.name, now=at(2026, 8, 19, 10, 0), omarchy=om, mode="scheduled")
-        s.recompute()
-        wait = s.compute_wait()
+        wait = s.tick()
         self.assertLessEqual(wait, 121)  # ~retryIntervalSeconds, not hours
 
 

@@ -11,15 +11,35 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from . import config as config_mod
 from . import ipc, paths
 from . import omarchy as omarchy_mod
+from . import schedule as schedule_mod
 
 EXIT_OK = 0
 EXIT_ERROR = 1
+
+
+@dataclass(frozen=True)
+class Deps:
+    """The adapters one invocation speaks through.
+
+    Production wires the real ones in :func:`_production_deps`; tests pass
+    fakes through the interface instead of patching module globals.
+    """
+
+    omarchy: omarchy_mod.Omarchy
+    control: Callable[[Path], Any]
+
+
+def _production_deps() -> Deps:
+    return Deps(omarchy=omarchy_mod.Omarchy(), control=ipc.ControlClient)
 
 
 def _load() -> dict[str, Any]:
@@ -31,9 +51,9 @@ def _save(cfg: dict[str, Any]) -> None:
     config_mod.save_config(cfg)
 
 
-def _notify_daemon() -> bool:
+def _notify_daemon(deps: Deps) -> bool:
     try:
-        ipc.ControlClient(paths.socket_path()).request("reload")
+        deps.control(paths.socket_path()).request("reload")
         return True
     except ipc.ControlError:
         return False
@@ -52,46 +72,20 @@ def _validate_or_fail(cfg: dict[str, Any], **kwargs: Any) -> bool:
     return True
 
 
-def _save_and_notify(cfg: dict[str, Any]) -> None:
+def _save_and_notify(cfg: dict[str, Any], deps: Deps) -> None:
     _save(cfg)
-    _require_daemon_or_warn(_notify_daemon())
-
-
-def _pretty_theme(slug: str | None) -> str:
-    if not slug:
-        return "(unset)"
-    om = omarchy_mod.Omarchy()
-    for line in om.list_theme_slugs():
-        if line == omarchy_mod.normalize_slug(slug):
-            # Find the display name Omarchy prints.
-            for name in _theme_display_names():
-                if omarchy_mod.normalize_slug(name) == line:
-                    return name
-            break
-    return slug
-
-
-def _theme_display_names() -> list[str]:
-    import subprocess
-
-    try:
-        proc = subprocess.run(
-            ["omarchy", "theme", "list"], capture_output=True, text=True, timeout=30, check=False
-        )
-    except (OSError, subprocess.SubprocessError):
-        return []
-    return [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+    _require_daemon_or_warn(_notify_daemon(deps))
 
 
 # ---- subcommands ----------------------------------------------------------
 
-def cmd_status(json_out: bool) -> int:
+def cmd_status(json_out: bool, deps: Deps) -> int:
     daemon_state: dict[str, Any] | None = None
     daemon_running = False
     try:
-        response = ipc.ControlClient(paths.socket_path()).request("status")
+        response = deps.control(paths.socket_path()).request("status")
         if response.get("ok"):
-            daemon_state = response.get("state") or {}
+            daemon_state = dict(response.get("state") or {})
             daemon_running = True
     except ipc.ControlError:
         pass
@@ -100,23 +94,26 @@ def cmd_status(json_out: bool) -> int:
     if daemon_state is None:
         from . import state as state_mod
 
-        daemon_state = state_mod.load_state(paths.state_file())
-        daemon_state["daemonRunning"] = False
+        daemon_state = state_mod.load_state(paths.state_file()).as_dict()
 
         # Persisted state describes the last daemon run, not newly saved
-        # preferences. Do not present it as current while the daemon is down.
-        if cfg.get("mode") == "manual":
-            kind = cfg.get("manualTheme")
-            desired_theme = cfg.get("lightTheme") if kind == "light" else cfg.get("darkTheme")
-        else:
-            kind = None
-            desired_theme = None
+        # preferences. Resolve the current Decision — the same pure rule the
+        # daemon uses — so a freshly saved manual preference shows through.
+        # With the daemon down we only surface manual desire; auto-mode
+        # desire depends on live solar/schedule evaluation.
+        now = datetime.now().astimezone()
+        decision = schedule_mod.resolve(cfg, now, now.tzinfo, None)
+        manual_desire = (
+            (decision.desiredKind, decision.desiredTheme)
+            if decision.ok and cfg.get("mode") == "manual"
+            else (None, None)
+        )
         daemon_state.update(
             {
-                "configured": bool(cfg.get("lightTheme") and cfg.get("darkTheme")),
+                "configured": decision.configured and decision.ok,
                 "mode": cfg.get("mode"),
-                "desiredKind": kind,
-                "desiredTheme": desired_theme,
+                "desiredKind": manual_desire[0],
+                "desiredTheme": manual_desire[1],
                 "nextTransition": None,
                 "nextTransitionKind": None,
                 "location": None,
@@ -125,24 +122,15 @@ def cmd_status(json_out: bool) -> int:
             }
         )
 
+    # The document is the State snapshot plus a live-Config echo; keys are
+    # owned by dusk.state's wire format, never re-declared here.
     merged = {
+        **daemon_state,
         "daemonRunning": daemon_running,
         "configured": bool(daemon_state.get("configured")),
         "mode": daemon_state.get("mode") or cfg.get("mode"),
-        "desiredKind": daemon_state.get("desiredKind"),
-        "desiredTheme": daemon_state.get("desiredTheme"),
-        "appliedTheme": daemon_state.get("appliedTheme"),
-        "currentTheme": daemon_state.get("currentTheme"),
-        "nextTransition": daemon_state.get("nextTransition"),
-        "nextTransitionKind": daemon_state.get("nextTransitionKind"),
         "lightTheme": cfg.get("lightTheme"),
         "darkTheme": cfg.get("darkTheme"),
-        "location": daemon_state.get("location"),
-        "locationSource": daemon_state.get("locationSource"),
-        "solarUnavailable": daemon_state.get("solarUnavailable"),
-        "lastError": daemon_state.get("lastError"),
-        "lastSuccess": daemon_state.get("lastSuccess"),
-        "updatedAt": daemon_state.get("updatedAt"),
         "configWarning": cfg_warning,
     }
 
@@ -160,11 +148,10 @@ def cmd_status(json_out: bool) -> int:
     if not merged["configured"]:
         print("Mode: Not configured (set a theme pair with `omarchy-auto-theme themes --light .. --dark ..`)")
     else:
-        om = omarchy_mod.Omarchy()
         current = merged.get("currentTheme")
         if current is None:
-            current = om.current_theme()
-        print(f"Theme: {_pretty_theme(current)}")
+            current = deps.omarchy.current_theme()
+        print(f"Theme: {deps.omarchy.pretty_name(current) or '(unset)'}")
         print(f"Mode: {mode_label}")
         if merged.get("nextTransition"):
             nxt = merged["nextTransition"]
@@ -176,7 +163,10 @@ def cmd_status(json_out: bool) -> int:
             print(f"Next transition: {(merged['nextTransitionKind'] or 'theme').title()} at {at}")
         else:
             print("Next transition: none (manual or no events)")
-        print(f"Theme pair: {_pretty_theme(merged['lightTheme'])} / {_pretty_theme(merged['darkTheme'])}")
+        print(
+            f"Theme pair: {deps.omarchy.pretty_name(merged['lightTheme']) or '(unset)'}"
+            f" / {deps.omarchy.pretty_name(merged['darkTheme']) or '(unset)'}"
+        )
 
     location_source = merged.get("locationSource")
     if location_source == "weather":
@@ -192,17 +182,17 @@ def cmd_status(json_out: bool) -> int:
     return EXIT_OK
 
 
-def cmd_solar() -> int:
+def cmd_solar(deps: Deps) -> int:
     cfg = _load()
     cfg["mode"] = "solar"
     if not _validate_or_fail(cfg):
         return EXIT_ERROR
-    _save_and_notify(cfg)
+    _save_and_notify(cfg, deps)
     print("Mode: Solar")
     return EXIT_OK
 
 
-def cmd_scheduled(light: str, dark: str) -> int:
+def cmd_scheduled(light: str, dark: str, deps: Deps) -> int:
     cfg = _load()
     errors = config_mod.validate_hm_pair(light, dark, "scheduled")
     if errors:
@@ -212,12 +202,12 @@ def cmd_scheduled(light: str, dark: str) -> int:
     cfg["mode"] = "scheduled"
     if not _validate_or_fail(cfg):
         return EXIT_ERROR
-    _save_and_notify(cfg)
+    _save_and_notify(cfg, deps)
     print(f"Mode: Scheduled (light {light}, dark {dark})")
     return EXIT_OK
 
 
-def cmd_manual(kind: str) -> int:
+def cmd_manual(kind: str, deps: Deps) -> int:
     if kind not in ("light", "dark"):
         print(f"manual requires 'light' or 'dark', got {kind!r}", file=sys.stderr)
         return EXIT_ERROR
@@ -228,25 +218,51 @@ def cmd_manual(kind: str) -> int:
         return EXIT_ERROR
     _save(cfg)
 
-    slug = cfg.get("lightTheme") if kind == "light" else cfg.get("darkTheme")
+    # One definition of "what does manual <kind> mean": the same pure
+    # Decision the daemon resolves.
+    now = datetime.now().astimezone()
+    decision = schedule_mod.resolve(cfg, now, now.tzinfo, None)
+    slug = decision.desiredTheme if decision.ok else None
     if not slug:
         print("themes not configured; `manual` set the mode but nothing is applied", file=sys.stderr)
         return EXIT_ERROR
-    if _notify_daemon():
+    if _notify_daemon(deps):
         print(f"Mode: Manual ({kind}) — theme {slug} will be applied by the scheduler")
         return EXIT_OK
-    # Daemon not running: apply directly so manual still works standalone.
-    om = omarchy_mod.Omarchy()
-    result = om.apply_theme(slug)
-    if result.success:
+
+    # Daemon not running: apply directly so manual still works standalone,
+    # through the same apply engine the daemon's Tick drives. Retry budgeting
+    # is a daemon concern; an interactive command reports its result instead.
+    from . import engine
+    from . import state as state_mod
+
+    state_path = paths.state_file()
+    self_state, outcome = engine.apply_and_record(
+        state_mod.load_state(state_path),
+        deps.omarchy,
+        slug,
+        now=now,
+        max_retries=None,
+    )
+    try:
+        state_mod.save_state(self_state, state_path)
+    except OSError as exc:
+        print(f"note: could not record state: {exc}", file=sys.stderr)
+
+    if outcome.noop:
+        print(f"Mode: Manual ({kind}) — theme {slug} already active")
+        return EXIT_OK
+    result = outcome.result
+    if result is not None and result.success:
         print(f"Mode: Manual ({kind}) — applied theme {slug}")
         return EXIT_OK
-    print(f"failed to apply theme {slug}: {(result.stderr or result.stdout).strip()}", file=sys.stderr)
+    detail = (result.stderr or result.stdout) if result is not None else ""
+    print(f"failed to apply theme {slug}: {detail.strip()}", file=sys.stderr)
     return EXIT_ERROR
 
 
-def cmd_themes(light: str | None, dark: str | None) -> int:
-    om = omarchy_mod.Omarchy()
+def cmd_themes(light: str | None, dark: str | None, deps: Deps) -> int:
+    om = deps.omarchy
     cfg = _load()
     errors: list[str] = []
     if light is not None:
@@ -267,14 +283,14 @@ def cmd_themes(light: str | None, dark: str | None) -> int:
         return EXIT_ERROR
     if not _validate_or_fail(cfg, theme_available=om.theme_available):
         return EXIT_ERROR
-    _save_and_notify(cfg)
+    _save_and_notify(cfg, deps)
     print(f"Theme pair: {cfg.get('lightTheme')} / {cfg.get('darkTheme')}")
     return EXIT_OK
 
 
-def cmd_themes_list(json_out: bool) -> int:
-    om = omarchy_mod.Omarchy()
-    names = _theme_display_names()
+def cmd_themes_list(json_out: bool, deps: Deps) -> int:
+    om = deps.omarchy
+    names = om.list_theme_names()
     themes: list[dict[str, str]] = []
     if names:
         seen: set[str] = set()
@@ -303,7 +319,7 @@ def cmd_themes_list(json_out: bool) -> int:
     return EXIT_OK
 
 
-def cmd_offsets(sunrise: str, sunset: str) -> int:
+def cmd_offsets(sunrise: str, sunset: str, deps: Deps) -> int:
     def parse_offset(value: str) -> int | None:
         try:
             return int(value)
@@ -326,13 +342,13 @@ def cmd_offsets(sunrise: str, sunset: str) -> int:
         "sunriseOffsetMinutes": sunrise_min,
         "sunsetOffsetMinutes": sunset_min,
     }
-    _save_and_notify(cfg)
+    _save_and_notify(cfg, deps)
     print(f"Solar offsets: sunrise {sunrise_min:+d} min, sunset {sunset_min:+d} min")
     return EXIT_OK
 
 
-def cmd_reload() -> int:
-    if _notify_daemon():
+def cmd_reload(deps: Deps) -> int:
+    if _notify_daemon(deps):
         print("reload sent to scheduler")
         return EXIT_OK
     print("scheduler is not running", file=sys.stderr)
@@ -394,7 +410,8 @@ def _build_parser() -> _Parser:
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, deps: Deps | None = None) -> int:
+    deps = deps or _production_deps()
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv or argv[0] in ("help", "-h", "--help"):
         print(usage())
@@ -407,24 +424,24 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_ERROR
 
     if args.command == "status":
-        return cmd_status(args.json)
+        return cmd_status(args.json, deps)
     if args.command == "solar":
-        return cmd_solar()
+        return cmd_solar(deps)
     if args.command == "reload":
-        return cmd_reload()
+        return cmd_reload(deps)
     if args.command == "scheduled":
-        return cmd_scheduled(args.light, args.dark)
+        return cmd_scheduled(args.light, args.dark, deps)
     if args.command == "manual":
-        return cmd_manual(args.kind)
+        return cmd_manual(args.kind, deps)
     if args.command == "offsets":
-        return cmd_offsets(args.sunrise, args.sunset)
+        return cmd_offsets(args.sunrise, args.sunset, deps)
 
     # args.command == "themes"
     if args.json:
-        return cmd_themes_list(True)
+        return cmd_themes_list(True, deps)
     if args.light is None and args.dark is None:
-        return cmd_themes_list(False)
-    return cmd_themes(args.light, args.dark)
+        return cmd_themes_list(False, deps)
+    return cmd_themes(args.light, args.dark, deps)
 
 
 if __name__ == "__main__":

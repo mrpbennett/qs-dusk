@@ -53,15 +53,28 @@ class Omarchy:
             check=False,
         )
 
-    def list_theme_slugs(self) -> set[str]:
+    def list_theme_names(self) -> list[str]:
+        """Raw display lines from `omarchy theme list`, in Omarchy's order."""
         try:
             proc = self._run(["theme", "list"], timeout=30)
         except (OSError, subprocess.SubprocessError):
-            return set()
+            return []
         if proc.returncode != 0:
-            return set()
-        slugs = {normalize_slug(line.strip()) for line in proc.stdout.splitlines() if line.strip()}
-        return slugs
+            return []
+        return [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+
+    def list_theme_slugs(self) -> set[str]:
+        return {normalize_slug(name) for name in self.list_theme_names() if name}
+
+    def pretty_name(self, slug: str | None) -> str:
+        """The display name Omarchy prints for `slug`, or the slug itself."""
+        if not slug:
+            return ""
+        target = normalize_slug(slug)
+        for name in self.list_theme_names():
+            if normalize_slug(name) == target:
+                return name
+        return slug
 
     def theme_available(self, slug: str) -> bool:
         slug = normalize_slug(slug)

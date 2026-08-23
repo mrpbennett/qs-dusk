@@ -49,3 +49,6 @@ class FakeOmarchy(omarchy_mod.Omarchy):
 
     def list_theme_slugs(self):
         return set(self.installed)
+
+    def list_theme_names(self):
+        return sorted(self.installed)
