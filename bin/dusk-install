@@ -1,0 +1,180 @@
+#!/usr/bin/env bash
+# Install or verify Dusk's runtime, widget, links, and systemd user service.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DUSK_SOURCE_DIR="${DUSK_SOURCE_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
+DUSK_HOME="${DUSK_HOME:-$DUSK_SOURCE_DIR}"
+BIN_DIR="${BIN_DIR:-$HOME/.local/bin}"
+UNIT_DIR="${UNIT_DIR:-$HOME/.config/systemd/user}"
+PLUGIN_DIR="${PLUGIN_DIR:-}"
+SYSTEMCTL="${SYSTEMCTL:-systemctl}"
+UNIT_TEMPLATE="$DUSK_HOME/systemd/dusk.service.tpl"
+UNIT_FILE="$UNIT_DIR/dusk.service"
+
+runtime_files=(
+  manifest.json Panel.qml Service.qml Icon.qml Bootstrap.qml
+  bin/dusk-bootstrap bin/dusk-install bin/omarchy-auto-theme bin/dusk-scheduler
+  docs/usage.md docs/design.md systemd/dusk.service.tpl
+  dusk/__init__.py dusk/cli.py dusk/config.py dusk/engine.py dusk/ipc.py
+  dusk/omarchy.py dusk/paths.py dusk/schedule.py dusk/scheduler.py dusk/solar.py
+  dusk/state.py dusk/status.py
+)
+plugin_files=(manifest.json Panel.qml Service.qml Icon.qml Bootstrap.qml)
+
+if [[ -x /usr/bin/python3 ]]; then
+  PYTHON=/usr/bin/python3
+else
+  PYTHON="$(command -v python3 || true)"
+fi
+[[ -n $PYTHON ]] || { echo "dusk-install: python3 not found on PATH" >&2; exit 1; }
+
+same_dir() {
+  [[ -d $1 && -d $2 && "$(cd "$1" && pwd -P)" == "$(cd "$2" && pwd -P)" ]]
+}
+
+require_layout() {
+  local root=$1 file
+  for file in "${runtime_files[@]}"; do
+    [[ -f "$root/$file" ]] || return 1
+  done
+}
+
+copy_runtime() {
+  local file target
+  require_layout "$DUSK_SOURCE_DIR" || {
+    echo "dusk-install: source runtime layout is incomplete" >&2
+    return 1
+  }
+  same_dir "$DUSK_SOURCE_DIR" "$DUSK_HOME" && return
+
+  mkdir -p "$DUSK_HOME/bin" "$DUSK_HOME/docs" "$DUSK_HOME/systemd" "$DUSK_HOME/dusk"
+  for file in "${runtime_files[@]}"; do
+    target="$DUSK_HOME/$file"
+    if [[ -L $target || ( -e $target && ! -f $target ) ]]; then
+      rm -rf -- "$target"
+    fi
+    cp -a "$DUSK_SOURCE_DIR/$file" "$target"
+  done
+}
+
+copy_plugin() {
+  local file target
+  [[ -n $PLUGIN_DIR ]] || return 0
+  same_dir "$DUSK_HOME" "$PLUGIN_DIR" && return
+
+  mkdir -p "$PLUGIN_DIR/bin"
+  for file in "${plugin_files[@]}"; do
+    target="$PLUGIN_DIR/$file"
+    if [[ -L $target || ( -e $target && ! -f $target ) ]]; then
+      rm -rf -- "$target"
+    fi
+    cp -a "$DUSK_HOME/$file" "$target"
+  done
+  target="$PLUGIN_DIR/bin/dusk-bootstrap"
+  if [[ -L $target || ( -e $target && ! -f $target ) ]]; then
+    rm -rf -- "$target"
+  fi
+  cp -a "$DUSK_HOME/bin/dusk-bootstrap" "$target"
+  printf '%s\n' "$DUSK_HOME" > "$PLUGIN_DIR/.dusk-home"
+}
+
+same_runtime_layout() {
+  local file
+  require_layout "$DUSK_SOURCE_DIR" || return 1
+  require_layout "$DUSK_HOME" || return 1
+  for file in "${runtime_files[@]}"; do
+    cmp -s "$DUSK_SOURCE_DIR/$file" "$DUSK_HOME/$file" || return 1
+  done
+}
+
+same_plugin_layout() {
+  local file marker
+  [[ -n $PLUGIN_DIR ]] || return 0
+  for file in "${plugin_files[@]}"; do
+    cmp -s "$DUSK_HOME/$file" "$PLUGIN_DIR/$file" || return 1
+  done
+  cmp -s "$DUSK_HOME/bin/dusk-bootstrap" "$PLUGIN_DIR/bin/dusk-bootstrap" || return 1
+  [[ -x "$PLUGIN_DIR/bin/dusk-bootstrap" ]] || return 1
+  if ! same_dir "$DUSK_HOME" "$PLUGIN_DIR"; then
+    [[ -f "$PLUGIN_DIR/.dusk-home" ]] || return 1
+    IFS= read -r marker < "$PLUGIN_DIR/.dusk-home"
+    [[ $marker == "$DUSK_HOME" ]] || return 1
+  fi
+}
+
+escape_replacement() {
+  printf '%s' "$1" | sed 's/[\\&|]/\\&/g'
+}
+
+render_unit() {
+  local dusk_home python
+  dusk_home="$(escape_replacement "$DUSK_HOME")"
+  python="$(escape_replacement "$PYTHON")"
+  sed -e "s|__DUSK_HOME__|$dusk_home|g" -e "s|__PYTHON__|$python|g" "$UNIT_TEMPLATE"
+}
+
+check_link() {
+  local name=$1
+  [[ -L "$BIN_DIR/$name" && "$(readlink "$BIN_DIR/$name")" == "$DUSK_HOME/bin/$name" ]]
+}
+
+install_link() {
+  local name=$1 path="$BIN_DIR/$1" target="$DUSK_HOME/bin/$1"
+  if [[ -e $path && ! -L $path ]]; then
+    if [[ -d $path ]]; then
+      rmdir "$path" || {
+        echo "dusk-install: command path is a non-empty directory: $path" >&2
+        return 1
+      }
+    else
+      rm -f "$path"
+    fi
+  fi
+  ln -sfn "$target" "$path"
+}
+
+check_install() {
+  same_runtime_layout || return 1
+  same_plugin_layout || return 1
+  [[ -x "$DUSK_HOME/bin/dusk-bootstrap" ]] || return 1
+  [[ -x "$DUSK_HOME/bin/dusk-install" ]] || return 1
+  [[ -x "$DUSK_HOME/bin/omarchy-auto-theme" ]] || return 1
+  [[ -x "$DUSK_HOME/bin/dusk-scheduler" ]] || return 1
+  check_link omarchy-auto-theme || return 1
+  check_link dusk-scheduler || return 1
+  [[ -f "$UNIT_FILE" ]] || return 1
+  cmp -s <(render_unit) "$UNIT_FILE"
+}
+
+case "${1:-}" in
+  --check)
+    [[ $# -eq 1 ]] || { echo "usage: dusk-install [--check]" >&2; exit 2; }
+    check_install
+    exit
+    ;;
+  "") ;;
+  *)
+    echo "usage: dusk-install [--check]" >&2
+    exit 2
+    ;;
+esac
+
+copy_runtime
+copy_plugin
+mkdir -p "$BIN_DIR" "$UNIT_DIR"
+chmod +x "$DUSK_HOME/bin/dusk-bootstrap" "$DUSK_HOME/bin/dusk-install" \
+  "$DUSK_HOME/bin/omarchy-auto-theme" "$DUSK_HOME/bin/dusk-scheduler"
+install_link omarchy-auto-theme
+install_link dusk-scheduler
+
+unit_tmp="$UNIT_FILE.tmp.$$"
+trap 'rm -f "$unit_tmp"' EXIT
+render_unit > "$unit_tmp"
+mv "$unit_tmp" "$UNIT_FILE"
+trap - EXIT
+
+"$SYSTEMCTL" --user daemon-reload
+"$SYSTEMCTL" --user enable dusk.service
+"$SYSTEMCTL" --user start dusk.service

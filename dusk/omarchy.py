@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -29,6 +30,35 @@ class ApplyResult:
     returncode: int | None = None
     stdout: str = ""
     stderr: str = ""
+
+
+@dataclass(frozen=True)
+class Theme:
+    slug: str
+    name: str
+
+
+@dataclass(frozen=True)
+class ThemeCatalog:
+    themes: tuple[Theme, ...]
+
+    def available(self, slug: str) -> bool:
+        return normalize_slug(slug) in self.slugs()
+
+    def display_name(self, slug: str | None) -> str:
+        if not slug:
+            return ""
+        target = normalize_slug(slug)
+        for theme in self.themes:
+            if theme.slug == target:
+                return theme.name
+        return slug
+
+    def slugs(self) -> tuple[str, ...]:
+        return tuple(theme.slug for theme in self.themes)
+
+    def as_dicts(self) -> list[dict[str, str]]:
+        return [{"slug": theme.slug, "name": theme.name} for theme in self.themes]
 
 
 class Omarchy:
@@ -53,40 +83,36 @@ class Omarchy:
             check=False,
         )
 
-    def list_theme_names(self) -> list[str]:
-        """Raw display lines from `omarchy theme list`, in Omarchy's order."""
+    def theme_catalog(self, candidates: Iterable[str] = ()) -> ThemeCatalog:
+        """Return one coherent view of installed themes for an operation."""
+        names: list[str] = []
         try:
             proc = self._run(["theme", "list"], timeout=30)
         except (OSError, subprocess.SubprocessError):
-            return []
-        if proc.returncode != 0:
-            return []
-        return [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+            proc = None
+        if proc is not None and proc.returncode == 0:
+            names = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
 
-    def list_theme_slugs(self) -> set[str]:
-        return {normalize_slug(name) for name in self.list_theme_names() if name}
+        themes: list[Theme] = []
+        seen: set[str] = set()
+        for name in names:
+            slug = normalize_slug(name)
+            if slug and slug not in seen:
+                themes.append(Theme(slug, name))
+                seen.add(slug)
 
-    def pretty_name(self, slug: str | None) -> str:
-        """The display name Omarchy prints for `slug`, or the slug itself."""
-        if not slug:
-            return ""
-        target = normalize_slug(slug)
-        for name in self.list_theme_names():
-            if normalize_slug(name) == target:
-                return name
-        return slug
-
-    def theme_available(self, slug: str) -> bool:
-        slug = normalize_slug(slug)
-        if not slug:
-            return False
-        if slug in self.list_theme_slugs():
-            return True
-        try:
-            proc = self._run(["theme", "dir", slug], timeout=15)
-        except (OSError, subprocess.SubprocessError):
-            return False
-        return proc.returncode == 0
+        for candidate in candidates:
+            slug = normalize_slug(candidate)
+            if not slug or slug in seen:
+                continue
+            try:
+                proc = self._run(["theme", "dir", slug], timeout=15)
+            except (OSError, subprocess.SubprocessError):
+                continue
+            if proc.returncode == 0:
+                themes.append(Theme(slug, slug.replace("-", " ").title()))
+                seen.add(slug)
+        return ThemeCatalog(tuple(themes))
 
     def current_theme(self) -> str | None:
         try:

@@ -132,9 +132,9 @@ desired theme only when the mode is automatic.
 ## Control socket
 
 Line-delimited JSON over a unix socket in `$XDG_RUNTIME_DIR/dusk/`.
-`status` returns the full state snapshot — the same document `state.json`
-holds, plus a live echo of the config's theme pair; keys are owned by
-DuskState's wire format alone. `reload` triggers a recompute.
+`status` returns the Status document: State plus the Config that produced it
+and Daemon liveness, projected by `dusk/status.py`. `reload` replies only after
+a fresh Tick has completed and State has been persisted.
 The CLI falls back to reading files if the daemon is unreachable; `manual`
 may then apply directly through the apply engine, recording the outcome
 in `state.json` via the same DuskState rules, so it works standalone.

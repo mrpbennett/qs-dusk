@@ -30,9 +30,6 @@ class FakeOmarchy(omarchy_mod.Omarchy):
         self.fail_on = fail_on or []  # slugs that should always fail
         self.fail_once = fail_once  # fail the very first apply, then succeed
 
-    def theme_available(self, slug):
-        return normalize_slug(slug) in self.installed
-
     def current_theme(self):
         return self.current
 
@@ -47,8 +44,9 @@ class FakeOmarchy(omarchy_mod.Omarchy):
         self.current = slug
         return ApplyResult(True, 0, "", "")
 
-    def list_theme_slugs(self):
-        return set(self.installed)
-
-    def list_theme_names(self):
-        return sorted(self.installed)
+    def theme_catalog(self, candidates=()):
+        themes = tuple(
+            omarchy_mod.Theme(slug, slug.replace("-", " ").title())
+            for slug in sorted(self.installed)
+        )
+        return omarchy_mod.ThemeCatalog(themes)

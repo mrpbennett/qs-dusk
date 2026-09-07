@@ -238,6 +238,21 @@ class SchedulerStateTest(unittest.TestCase):
         self.assertFalse(st.configured)
         self.assertIsNone(st.desired_theme)
 
+    def test_reload_reports_failed_state_persistence(self):
+        s = make_scheduler(
+            self.tmp.name,
+            now=at(2026, 8, 19, 10, 0),
+            omarchy=FakeOmarchy(installed=[LIGHT, DARK], current=LIGHT),
+        )
+        invalid_parent = Path(self.tmp.name) / "not-a-directory"
+        invalid_parent.write_text("occupied", encoding="utf-8")
+        s.state_path = invalid_parent / "state.json"
+
+        response = s._request_handler({"cmd": "reload"})
+
+        self.assertFalse(response["ok"])
+        self.assertIn("persist", response["error"])
+
     def test_invalid_config_no_apply_and_error_recorded(self):
         config_path = Path(self.tmp.name) / "config.json"
         state_path = Path(self.tmp.name) / "state.json"

@@ -36,7 +36,16 @@ adapter, locality) follows the codebase-design glossary.
   apply and all retry behavior.
 - **Control socket** — `$XDG_RUNTIME_DIR/dusk/control.sock`; line-delimited
   JSON (`status`, `reload`). The CLI and bar widget write intent through it;
-  they never invoke `omarchy theme set` themselves.
+  they never invoke `omarchy theme set` themselves. A successful `reload`
+  response means a fresh Tick has completed and State has been persisted.
+- **Status document** — the consumer-facing projection of State, the Config
+  that produced it, and Daemon liveness. With the Daemon down it uses current
+  Config but never presents a stale automatic Decision as current.
+- **Theme catalog** — one coherent view of Omarchy's installed themes for an
+  operation: normalized slugs, display names, and availability.
+- **Installation** — the idempotent setup of Dusk's executable links, Daemon
+  unit, and optional bar widget files. A successful check means the installed
+  paths still point at the current Dusk source.
 
 ## Architecture terms
 
@@ -44,8 +53,9 @@ adapter, locality) follows the codebase-design glossary.
   resolve the Decision, sync state, apply if healthy, persist, and return
   the seconds until the next wake. Retry/backoff policy lives entirely here.
 - **Pump** — `Scheduler.run`: wires wakes (socket requests, signal pipe,
-  timeout) into ticks; owns no policy. Contract: any handled request is
-  followed by a fresh tick, which is why `reload` recomputes promptly.
+  timeout) into ticks; owns no policy. A `reload` handler completes a fresh
+  Tick before replying; observational requests preserve the current transition
+  deadline, while timeout and signal wakes cause a fresh Tick.
 - **Transition engine** — the tick implementation as a whole: the deep
   module behind which decision resolution, application, retries, state sync,
   and wait computation are hidden. Testable through `tick()` with an

@@ -1,36 +1,19 @@
 #!/usr/bin/env bash
 # Dusk self-bootstrap — run by the Dusk bar widget the first time it loads.
 #
-# Makes Dusk work straight out of `omarchy plugin add <url>`:
-#   1. Symlinks the CLI and scheduler into ~/.local/bin.
-#   2. Writes the dusk.service user unit pointing at THIS plugin folder.
-#   3. Enables and starts the service.
-#
-# The scheduler and CLI run from the plugin folder itself, so `omarchy plugin
-# update` keeps everything in sync. Idempotent — safe to run repeatedly.
+# Delegates installation and repair checks to the shared installer.
 
 set -euo pipefail
 
-PLUGIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PLUGIN_DIR="${PLUGIN_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 
-# A python3 interpreter that always exists for the systemd unit (the CLI uses
-# `env python3` from the user's PATH instead).
-if [[ -x /usr/bin/python3 ]]; then
-  PYTHON=/usr/bin/python3
-else
-  PYTHON="$(command -v python3)"
+# Direct installs keep runtime files outside the widget directory. The marker
+# lets the copied bootstrap validate and repair that same source tree.
+if [[ -z ${DUSK_HOME:-} && -f "$PLUGIN_DIR/.dusk-home" ]]; then
+  IFS= read -r DUSK_HOME < "$PLUGIN_DIR/.dusk-home"
 fi
-[[ -n $PYTHON ]] || { echo "dusk-bootstrap: python3 not found on PATH" >&2; exit 1; }
+DUSK_HOME="${DUSK_HOME:-$PLUGIN_DIR}"
+DUSK_SOURCE_DIR="${DUSK_SOURCE_DIR:-$DUSK_HOME}"
+export DUSK_HOME DUSK_SOURCE_DIR PLUGIN_DIR
 
-mkdir -p "$HOME/.local/bin" "$HOME/.config/systemd/user"
-
-chmod +x "$PLUGIN_DIR/bin/omarchy-auto-theme" "$PLUGIN_DIR/bin/dusk-scheduler"
-ln -sf "$PLUGIN_DIR/bin/omarchy-auto-theme" "$HOME/.local/bin/omarchy-auto-theme"
-ln -sf "$PLUGIN_DIR/bin/dusk-scheduler" "$HOME/.local/bin/dusk-scheduler"
-
-sed -e "s|__DUSK_HOME__|$PLUGIN_DIR|g" -e "s|__PYTHON__|$PYTHON|g" \
-  "$PLUGIN_DIR/systemd/dusk.service.tpl" > "$HOME/.config/systemd/user/dusk.service"
-
-systemctl --user daemon-reload
-systemctl --user enable dusk.service
-systemctl --user start dusk.service
+exec "$DUSK_HOME/bin/dusk-install" "$@"

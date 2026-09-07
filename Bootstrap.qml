@@ -2,10 +2,8 @@ import QtQuick
 import Quickshell.Io
 
 // Self-bootstrap for the Dusk widget: the first time it loads without an
-// omarchy-auto-theme CLI on PATH, runs the bundled dusk-bootstrap to symlink
-// the CLI, write the dusk.service user unit (pointing at this plugin folder),
-// and start the scheduler. Everything afterwards goes through the CLI, so a
-// successful bootstrap needs no further setup or scripts.
+// valid Dusk installation, runs the bundled dusk-bootstrap to repair the
+// command links and service unit and start the scheduler.
 //
 // Install orchestration lives here so Service.qml stays reflection + intent:
 // this item reports `installed()` or `failed(message)` and nothing else.
@@ -26,7 +24,7 @@ Item {
 
   function ensureInstalled() {
     if (setupProbe.running || bootstrapProcess.running) return
-    setupProbe.command = ["/bin/sh", "-c", "test -x \"$HOME/.local/bin/omarchy-auto-theme\""]
+    setupProbe.command = [root.pluginDir + "/bin/dusk-bootstrap", "--check"]
     setupProbe.running = true
   }
 
@@ -58,8 +56,9 @@ Item {
       if (exitCode !== 0) {
         var err = bootstrapStderr.text.trim()
         root.failed(err !== "" ? err : "dusk bootstrap failed")
+      } else {
+        root.finishSetup()
       }
-      root.finishSetup()
     }
   }
 

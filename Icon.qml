@@ -1,8 +1,8 @@
 import QtQuick
 import qs.Commons
 
-// A compact celestial glyph: sun for Light, crescent for Dark, and a split
-// day/night dial for Auto. Each state has a distinct silhouette at bar scale.
+// Compact outline glyphs with one visual weight: sun for Light, crescent for
+// Dark, and sunrise for Auto. Each state stays distinct at bar scale.
 Item {
   id: root
 
@@ -35,7 +35,7 @@ Item {
       var size = Math.min(w, h)
       var cx = w / 2
       var cy = h / 2
-      var stroke = Math.max(1.25, size * 0.105)
+      var stroke = Math.max(1.35, size * 0.09)
 
       ctx.reset()
       ctx.clearRect(0, 0, w, h)
@@ -43,11 +43,12 @@ Item {
       ctx.fillStyle = root.color
       ctx.lineWidth = stroke
       ctx.lineCap = "round"
+      ctx.lineJoin = "round"
 
       if (root.kind === "light") {
-        var sunRadius = size * 0.19
-        var rayStart = size * 0.31
-        var rayEnd = size * 0.43
+        var sunRadius = size * 0.18
+        var rayStart = size * 0.30
+        var rayEnd = size * 0.41
 
         ctx.beginPath()
         ctx.arc(cx, cy, sunRadius, 0, Math.PI * 2)
@@ -62,35 +63,41 @@ Item {
                     cy + Math.sin(angle) * rayEnd)
         }
       } else if (root.kind === "dark") {
-        var moonRadius = size * 0.31
-
-        // Cut the overlapping disc out of the filled moon for a clean crescent.
-        ctx.save()
+        // One continuous outline avoids the heavy filled weight of a cutout.
         ctx.beginPath()
-        ctx.arc(cx - size * 0.04, cy, moonRadius, 0, Math.PI * 2)
-        ctx.fill()
-        ctx.globalCompositeOperation = "destination-out"
-        ctx.beginPath()
-        ctx.arc(cx + size * 0.17, cy - size * 0.06, moonRadius, 0, Math.PI * 2)
-        ctx.fill()
-        ctx.restore()
+        ctx.moveTo(cx + size * 0.10, cy - size * 0.34)
+        ctx.bezierCurveTo(cx - size * 0.19, cy - size * 0.25,
+                          cx - size * 0.25, cy + size * 0.18,
+                          cx + size * 0.02, cy + size * 0.31)
+        ctx.bezierCurveTo(cx + size * 0.20, cy + size * 0.40,
+                          cx + size * 0.38, cy + size * 0.27,
+                          cx + size * 0.40, cy + size * 0.15)
+        ctx.bezierCurveTo(cx + size * 0.09, cy + size * 0.14,
+                          cx - size * 0.04, cy - size * 0.14,
+                          cx + size * 0.10, cy - size * 0.34)
+        ctx.stroke()
       } else {
-        var dialRadius = size * 0.32
+        var horizonY = cy + size * 0.13
+        var riseRadius = size * 0.19
+        var autoRayStart = size * 0.29
+        var autoRayEnd = size * 0.39
 
         ctx.beginPath()
-        ctx.arc(cx, cy, dialRadius, 0, Math.PI * 2)
+        ctx.arc(cx, horizonY, riseRadius, Math.PI, Math.PI * 2)
         ctx.stroke()
 
-        ctx.save()
-        ctx.beginPath()
-        ctx.arc(cx, cy, dialRadius - stroke / 2, 0, Math.PI * 2)
-        ctx.clip()
-        ctx.globalAlpha = 0.32
-        ctx.fillRect(cx, cy - dialRadius, dialRadius, dialRadius * 2)
-        ctx.restore()
+        root.line(ctx, cx - size * 0.39, horizonY, cx + size * 0.39, horizonY)
+        root.line(ctx, cx - size * 0.25, horizonY + size * 0.14,
+                       cx + size * 0.25, horizonY + size * 0.14)
 
-        ctx.globalAlpha = 0.75
-        root.line(ctx, cx, cy - dialRadius + stroke, cx, cy + dialRadius - stroke)
+        for (var j = 0; j < 5; j++) {
+          var autoAngle = Math.PI + j * Math.PI / 4
+          root.line(ctx,
+                    cx + Math.cos(autoAngle) * autoRayStart,
+                    horizonY + Math.sin(autoAngle) * autoRayStart,
+                    cx + Math.cos(autoAngle) * autoRayEnd,
+                    horizonY + Math.sin(autoAngle) * autoRayEnd)
+        }
       }
     }
   }

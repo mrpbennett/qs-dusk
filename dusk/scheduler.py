@@ -23,6 +23,7 @@ from typing import Any
 from . import config, ipc, paths, schedule
 from . import omarchy as omarchy_mod
 from . import state as state_mod
+from . import status as status_mod
 from .engine import apply_and_record
 
 log = logging.getLogger("dusk")
@@ -58,8 +59,12 @@ class Scheduler:
         self.logger = logger or log
 
         self.state = state_mod.load_state(self.state_path)
+        self.config = config.defaults()
+        self.config_warning: str | None = None
         self.server: ipc.ControlServer | None = None
         self._stop = False
+        self._wait_after_request: float | None = None
+        self._last_persisted = True
         self._wake_r: int | None = None
         self._wake_w: int | None = None
         if socket_path is not None:
@@ -99,27 +104,44 @@ class Scheduler:
     def run(self) -> None:
         """Pump: tick, wait for the next wake, repeat.
 
-        Contract with ``ControlServer.poll``: it returns after the first
-        ready round (a client request or the signal wake pipe) or at
-        timeout. Any handled request — including a plain ``status`` — is
-        therefore followed by a fresh tick, which is what makes a
-        ``reload`` recompute promptly instead of waiting out the wait.
+        ``ControlServer.poll`` returns after the first ready round or timeout.
+        Reload handlers complete their Tick before replying and supply the new
+        wait. Observational requests preserve the current deadline; timeout and
+        signal wakes cause a fresh Tick here.
         """
         self._install_signals()
         try:
+            wait = self.tick()
+            deadline = time.monotonic() + wait
             while not self._stop:
-                wait = self.tick()
                 if self._stop:
                     break
                 if self.server is not None:
-                    handled = self.server.poll(wait, handler=self._request_handler)
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        wait = self.tick()
+                        deadline = time.monotonic() + wait
+                        continue
+                    handled = self.server.poll(remaining, handler=self._request_handler)
                     self.logger.debug(
                         "woke after %.1fs: %s",
                         wait,
                         [request.get("cmd") for request in handled],
                     )
+                    if self._wait_after_request is not None:
+                        wait = self._wait_after_request
+                        self._wait_after_request = None
+                        deadline = time.monotonic() + wait
+                    elif handled and not any(
+                        request.get("cmd") == "__signal" for request in handled
+                    ):
+                        continue
+                    else:
+                        wait = self.tick()
+                        deadline = time.monotonic() + wait
                 else:
                     time.sleep(min(wait, 1.0))
+                    wait = self.tick()
         finally:
             self.logger.info("scheduler stopped")
             if self.server is not None:
@@ -143,7 +165,10 @@ class Scheduler:
             return {"ok": True, "state": self.status_snapshot()}
         if cmd == "reload":
             self.logger.info("reload requested via control socket")
-            return {"ok": True}
+            self._wait_after_request = self.tick()
+            if not self._last_persisted:
+                return {"ok": False, "error": "could not persist State"}
+            return {"ok": True, "state": self.status_snapshot()}
         return {"ok": False, "error": f"unknown command {cmd!r}"}
 
     # ---- decision loop ----------------------------------------------------
@@ -161,9 +186,14 @@ class Scheduler:
         tz = self.tz_fn()
         location = self.location_provider()
         cfg, cfg_warning = config.load_config(self.config_path)
+        self.config = cfg
+        self.config_warning = cfg_warning
+        catalog = self.omarchy.theme_catalog(
+            value for value in (cfg.get("lightTheme"), cfg.get("darkTheme")) if value
+        )
 
         decision = schedule.resolve(
-            cfg, now, tz, location, theme_available=self.omarchy.theme_available
+            cfg, now, tz, location, theme_available=catalog.available
         )
         if cfg_warning and decision.ok:
             decision.errors.append(cfg_warning)
@@ -229,14 +259,19 @@ class Scheduler:
             self.logger.error("%s", self.state.last_error)
 
     def _persist_state(self) -> None:
+        self._last_persisted = True
         try:
             state_mod.save_state(self.state, self.state_path)
         except OSError as exc:
+            self._last_persisted = False
             self.logger.error("could not persist state: %s", exc)
 
     # ---- helpers ----------------------------------------------------------
 
     def status_snapshot(self) -> dict[str, Any]:
-        snapshot = self.state.as_dict()
-        snapshot["daemonRunning"] = True
-        return snapshot
+        return status_mod.document(
+            self.state,
+            self.config,
+            daemon_running=True,
+            config_warning=self.config_warning,
+        )

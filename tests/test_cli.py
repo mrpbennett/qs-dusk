@@ -27,7 +27,16 @@ class UpClient:
 
     def request(self, cmd, **kwargs):
         if cmd == "status":
-            return {"ok": True, "state": {"mode": "solar", "configured": True}}
+            state = state_mod.DuskState(mode="solar", configured=True).as_dict()
+            state.update(
+                {
+                    "daemonRunning": True,
+                    "lightTheme": LIGHT,
+                    "darkTheme": DARK,
+                    "configWarning": None,
+                }
+            )
+            return {"ok": True, "state": state}
         return {"ok": True}
 
 
@@ -39,6 +48,14 @@ class DownClient:
 
     def request(self, cmd, **kwargs):
         raise ipc.ControlError("daemon down")
+
+
+class RejectingClient:
+    def __init__(self, path, timeout=3.0):
+        pass
+
+    def request(self, cmd, **kwargs):
+        return {"ok": False, "error": "could not persist State"}
 
 
 class CliTest(unittest.TestCase):
@@ -54,6 +71,10 @@ class CliTest(unittest.TestCase):
         self.fake = FakeOmarchy(installed=[LIGHT, DARK, OTHER])
         self.deps_up = cli.Deps(omarchy=self.fake, control=lambda path: UpClient(path))
         self.deps_down = cli.Deps(omarchy=self.fake, control=lambda path: DownClient(path))
+        self.deps_rejecting = cli.Deps(
+            omarchy=self.fake,
+            control=lambda path: RejectingClient(path),
+        )
 
     def tearDown(self):
         for key, value in self._old_env.items():
@@ -110,6 +131,16 @@ class CliTest(unittest.TestCase):
     def test_reload_reports_daemon_state(self):
         self.assertEqual(cli.main(["reload"], self.deps_up), 0)
         self.assertEqual(cli.main(["reload"], self.deps_down), 1)
+        self.assertEqual(cli.main(["reload"], self.deps_rejecting), 1)
+
+    def test_manual_does_not_apply_standalone_when_daemon_rejects_reload(self):
+        self.fake.current = OTHER
+        write_config(self.config_path, {"lightTheme": LIGHT, "darkTheme": DARK})
+
+        rc = cli.cmd_manual("light", self.deps_rejecting)
+
+        self.assertEqual(rc, 1)
+        self.assertEqual(self.fake.applied, [])
 
     def test_scheduled_rejects_equal_times(self):
         rc = cli.cmd_scheduled("07:00", "07:00", self.deps_up)

@@ -228,14 +228,8 @@ Item {
       if (exitCode !== 0) root.lastError = root._actionError.trim() !== "" ? root._actionError : "dusk action failed"
       else root.lastError = ""
       // Actions change config; refresh reflects the scheduler's decision.
-      Qt.callLater(function() { root.refresh(); root.refreshThemes(); followUpRefresh.restart() })
+      Qt.callLater(function() { root.refresh(); root.refreshThemes() })
     }
-  }
-
-  Timer {
-    id: followUpRefresh
-    interval: 1500
-    onTriggered: root.refresh()
   }
 
   onStateLoaded: {

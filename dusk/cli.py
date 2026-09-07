@@ -14,11 +14,12 @@ import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
 from . import config as config_mod
-from . import ipc, paths
+from . import ipc, paths, status
 from . import omarchy as omarchy_mod
 from . import schedule as schedule_mod
 
@@ -51,17 +52,27 @@ def _save(cfg: dict[str, Any]) -> None:
     config_mod.save_config(cfg)
 
 
-def _notify_daemon(deps: Deps) -> bool:
+class ReloadResult(Enum):
+    COMPLETED = "completed"
+    UNREACHABLE = "unreachable"
+    REJECTED = "rejected"
+
+
+def _notify_daemon(deps: Deps) -> ReloadResult:
     try:
-        deps.control(paths.socket_path()).request("reload")
-        return True
+        response = deps.control(paths.socket_path()).request("reload")
+        if response.get("ok") is True:
+            return ReloadResult.COMPLETED
+        return ReloadResult.REJECTED
     except ipc.ControlError:
-        return False
+        return ReloadResult.UNREACHABLE
 
 
-def _require_daemon_or_warn(notified: bool) -> None:
-    if not notified:
+def _require_daemon_or_warn(result: ReloadResult) -> None:
+    if result is ReloadResult.UNREACHABLE:
         print("note: scheduler is not running; the change applies on next start", file=sys.stderr)
+    elif result is ReloadResult.REJECTED:
+        print("note: scheduler did not complete reload; it will retry on its next Tick", file=sys.stderr)
 
 
 def _validate_or_fail(cfg: dict[str, Any], **kwargs: Any) -> bool:
@@ -80,59 +91,29 @@ def _save_and_notify(cfg: dict[str, Any], deps: Deps) -> None:
 # ---- subcommands ----------------------------------------------------------
 
 def cmd_status(json_out: bool, deps: Deps) -> int:
-    daemon_state: dict[str, Any] | None = None
-    daemon_running = False
+    merged: dict[str, Any] | None = None
+    catalog: omarchy_mod.ThemeCatalog | None = None
     try:
         response = deps.control(paths.socket_path()).request("status")
         if response.get("ok"):
-            daemon_state = dict(response.get("state") or {})
-            daemon_running = True
+            merged = dict(response.get("state") or {})
     except ipc.ControlError:
         pass
 
-    cfg, cfg_warning = config_mod.load_config()
-    if daemon_state is None:
+    if merged is None:
         from . import state as state_mod
 
-        daemon_state = state_mod.load_state(paths.state_file()).as_dict()
-
-        # Persisted state describes the last daemon run, not newly saved
-        # preferences. Resolve the current Decision — the same pure rule the
-        # daemon uses — so a freshly saved manual preference shows through.
-        # With the daemon down we only surface manual desire; auto-mode
-        # desire depends on live solar/schedule evaluation.
-        now = datetime.now().astimezone()
-        decision = schedule_mod.resolve(cfg, now, now.tzinfo, None)
-        manual_desire = (
-            (decision.desiredKind, decision.desiredTheme)
-            if decision.ok and cfg.get("mode") == "manual"
-            else (None, None)
+        cfg, cfg_warning = config_mod.load_config()
+        catalog = deps.omarchy.theme_catalog(
+            value for value in (cfg.get("lightTheme"), cfg.get("darkTheme")) if value
         )
-        daemon_state.update(
-            {
-                "configured": decision.configured and decision.ok,
-                "mode": cfg.get("mode"),
-                "desiredKind": manual_desire[0],
-                "desiredTheme": manual_desire[1],
-                "nextTransition": None,
-                "nextTransitionKind": None,
-                "location": None,
-                "locationSource": None,
-                "solarUnavailable": None,
-            }
+        merged = status.document(
+            state_mod.load_state(paths.state_file()),
+            cfg,
+            daemon_running=False,
+            config_warning=cfg_warning,
+            theme_available=catalog.available,
         )
-
-    # The document is the State snapshot plus a live-Config echo; keys are
-    # owned by dusk.state's wire format, never re-declared here.
-    merged = {
-        **daemon_state,
-        "daemonRunning": daemon_running,
-        "configured": bool(daemon_state.get("configured")),
-        "mode": daemon_state.get("mode") or cfg.get("mode"),
-        "lightTheme": cfg.get("lightTheme"),
-        "darkTheme": cfg.get("darkTheme"),
-        "configWarning": cfg_warning,
-    }
 
     if json_out:
         print(json.dumps(merged, indent=2, sort_keys=True))
@@ -151,7 +132,13 @@ def cmd_status(json_out: bool, deps: Deps) -> int:
         current = merged.get("currentTheme")
         if current is None:
             current = deps.omarchy.current_theme()
-        print(f"Theme: {deps.omarchy.pretty_name(current) or '(unset)'}")
+        if catalog is None:
+            catalog = deps.omarchy.theme_catalog(
+                value
+                for value in (current, merged.get("lightTheme"), merged.get("darkTheme"))
+                if value
+            )
+        print(f"Theme: {catalog.display_name(current) or '(unset)'}")
         print(f"Mode: {mode_label}")
         if merged.get("nextTransition"):
             nxt = merged["nextTransition"]
@@ -164,8 +151,8 @@ def cmd_status(json_out: bool, deps: Deps) -> int:
         else:
             print("Next transition: none (manual or no events)")
         print(
-            f"Theme pair: {deps.omarchy.pretty_name(merged['lightTheme']) or '(unset)'}"
-            f" / {deps.omarchy.pretty_name(merged['darkTheme']) or '(unset)'}"
+            f"Theme pair: {catalog.display_name(merged['lightTheme']) or '(unset)'}"
+            f" / {catalog.display_name(merged['darkTheme']) or '(unset)'}"
         )
 
     location_source = merged.get("locationSource")
@@ -177,7 +164,7 @@ def cmd_status(json_out: bool, deps: Deps) -> int:
         print(f"Fallback: {merged['solarUnavailable']}")
     if merged.get("lastError"):
         print(f"Error: {merged['lastError']}")
-    if not daemon_running:
+    if not merged["daemonRunning"]:
         print("Scheduler: not running")
     return EXIT_OK
 
@@ -226,9 +213,13 @@ def cmd_manual(kind: str, deps: Deps) -> int:
     if not slug:
         print("themes not configured; `manual` set the mode but nothing is applied", file=sys.stderr)
         return EXIT_ERROR
-    if _notify_daemon(deps):
+    reload_result = _notify_daemon(deps)
+    if reload_result is ReloadResult.COMPLETED:
         print(f"Mode: Manual ({kind}) — theme {slug} will be applied by the scheduler")
         return EXIT_OK
+    if reload_result is ReloadResult.REJECTED:
+        print("scheduler did not complete reload", file=sys.stderr)
+        return EXIT_ERROR
 
     # Daemon not running: apply directly so manual still works standalone,
     # through the same apply engine the daemon's Tick drives. Retry budgeting
@@ -265,23 +256,28 @@ def cmd_themes(light: str | None, dark: str | None, deps: Deps) -> int:
     om = deps.omarchy
     cfg = _load()
     errors: list[str] = []
+    light_slug = omarchy_mod.normalize_slug(light) if light is not None else None
+    dark_slug = omarchy_mod.normalize_slug(dark) if dark is not None else None
+    catalog = om.theme_catalog(
+        value
+        for value in (light_slug, dark_slug, cfg.get("lightTheme"), cfg.get("darkTheme"))
+        if value
+    )
     if light is not None:
-        light_slug = omarchy_mod.normalize_slug(light)
-        if not om.theme_available(light_slug):
+        if not catalog.available(light_slug or ""):
             errors.append(f"light theme {light!r} is not installed")
         else:
             cfg["lightTheme"] = light_slug
     if dark is not None:
-        dark_slug = omarchy_mod.normalize_slug(dark)
-        if not om.theme_available(dark_slug):
+        if not catalog.available(dark_slug or ""):
             errors.append(f"dark theme {dark!r} is not installed")
         else:
             cfg["darkTheme"] = dark_slug
     if errors:
         print("; ".join(errors), file=sys.stderr)
-        print("available themes: " + ", ".join(sorted(om.list_theme_slugs())), file=sys.stderr)
+        print("available themes: " + ", ".join(catalog.slugs()), file=sys.stderr)
         return EXIT_ERROR
-    if not _validate_or_fail(cfg, theme_available=om.theme_available):
+    if not _validate_or_fail(cfg, theme_available=catalog.available):
         return EXIT_ERROR
     _save_and_notify(cfg, deps)
     print(f"Theme pair: {cfg.get('lightTheme')} / {cfg.get('darkTheme')}")
@@ -289,20 +285,7 @@ def cmd_themes(light: str | None, dark: str | None, deps: Deps) -> int:
 
 
 def cmd_themes_list(json_out: bool, deps: Deps) -> int:
-    om = deps.omarchy
-    names = om.list_theme_names()
-    themes: list[dict[str, str]] = []
-    if names:
-        seen: set[str] = set()
-        for name in names:
-            slug = omarchy_mod.normalize_slug(name)
-            if slug and slug not in seen:
-                seen.add(slug)
-                themes.append({"slug": slug, "name": name})
-    else:
-        for slug in sorted(om.list_theme_slugs()):
-            if slug:
-                themes.append({"slug": slug, "name": slug.replace("-", " ").title()})
+    themes = deps.omarchy.theme_catalog().as_dicts()
     cfg, _ = config_mod.load_config()
     if json_out:
         payload = {
@@ -348,10 +331,10 @@ def cmd_offsets(sunrise: str, sunset: str, deps: Deps) -> int:
 
 
 def cmd_reload(deps: Deps) -> int:
-    if _notify_daemon(deps):
+    if _notify_daemon(deps) is ReloadResult.COMPLETED:
         print("reload sent to scheduler")
         return EXIT_OK
-    print("scheduler is not running", file=sys.stderr)
+    print("scheduler did not complete reload", file=sys.stderr)
     return EXIT_ERROR
 
 

@@ -124,11 +124,20 @@ class RunLoopIntegrationTest(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_startup_status_reload_and_shutdown(self):
+        ticks = []
+        original_tick = self.scheduler.tick
+
+        def counted_tick():
+            ticks.append(True)
+            return original_tick()
+
+        self.scheduler.tick = counted_tick
         thread = threading.Thread(target=self.scheduler.run, daemon=True)
         thread.start()
         try:
             # Startup tick applies the desired theme through the adapter.
             self.assertTrue(wait_until(lambda: self.om.applied == [LIGHT]))
+            self.assertEqual(len(ticks), 1)
 
             # A status query is answered mid-wait, out of the live engine.
             client = scheduler_mod.ipc.ControlClient(self.sock_path)
@@ -136,23 +145,19 @@ class RunLoopIntegrationTest(unittest.TestCase):
             self.assertTrue(response["ok"])
             self.assertTrue(response["state"]["daemonRunning"])
             self.assertEqual(response["state"]["desiredTheme"], LIGHT)
+            time.sleep(0.05)
+            self.assertEqual(len(ticks), 1, "status must preserve the transition deadline")
 
             # Reload after the clock jumps past the evening transition must
             # recompute promptly: the regression that was previously untested.
             self.clock["now"] = at(2026, 8, 19, 20, 0)
-            self.assertTrue(client.request("reload")["ok"])
-            self.assertTrue(
-                wait_until(lambda: self.om.applied == [LIGHT, DARK], timeout=2.0),
-                "reload did not trigger a prompt recompute",
-            )
-            # Persistence trails the native call by a moment inside the tick.
-            self.assertTrue(
-                wait_until(
-                    lambda: state_mod.load_state(self.state_path).applied_theme == DARK,
-                    timeout=2.0,
-                ),
-                "recomputed outcome was not persisted",
-            )
+            reload_response = client.request("reload")
+            self.assertTrue(reload_response["ok"])
+            self.assertEqual(reload_response["state"]["desiredTheme"], DARK)
+            self.assertEqual(self.om.applied, [LIGHT, DARK])
+            self.assertEqual(len(ticks), 2)
+            time.sleep(0.05)
+            self.assertEqual(len(ticks), 2, "reload must not cause a duplicate tick")
             state = state_mod.load_state(self.state_path)
             self.assertEqual(state.applied_theme, DARK)
 

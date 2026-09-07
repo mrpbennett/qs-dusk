@@ -65,9 +65,9 @@ class ControlServer:
 
         Contract: poll returns after the FIRST ready round of events or at
         the timeout, whichever comes first — it never keeps waiting just
-        because events arrived. Callers that must react to a request (e.g.
-        the scheduler pump re-ticking on `reload`) rely on this prompt
-        return; do not loop internally until the deadline.
+        because events arrived. The scheduler relies on this prompt return for
+        timeout and signal wakes; request handlers may complete work before
+        replying. Do not loop internally until the deadline.
         """
         handled: list[dict[str, Any]] = []
         deadline = None
@@ -103,9 +103,8 @@ class ControlServer:
                             if response is not None:
                                 self.respond(conn, response)
                     conn.close()
-            # Return after the first ready round so a handled request (e.g. a
-            # reload) lets the scheduler recompute promptly instead of waiting
-            # out the full transition sleep.
+            # Return after the first ready round so the pump can establish a
+            # fresh wait instead of waiting out the previous transition sleep.
             break
         return handled
 
