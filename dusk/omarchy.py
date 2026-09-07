@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 import subprocess
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -41,9 +41,23 @@ class Theme:
 @dataclass(frozen=True)
 class ThemeCatalog:
     themes: tuple[Theme, ...]
+    discovery_error: str | None = None
+    unknown_slugs: frozenset[str] = frozenset()
+    absent_slugs: frozenset[str] = frozenset()
+    discovery_complete: bool = True
 
     def available(self, slug: str) -> bool:
-        return normalize_slug(slug) in self.slugs()
+        return self.availability(slug) is True
+
+    def availability(self, slug: str) -> bool | None:
+        slug = normalize_slug(slug)
+        if slug in self.slugs():
+            return True
+        if slug in self.absent_slugs:
+            return False
+        if not self.discovery_complete or slug in self.unknown_slugs:
+            return None
+        return False
 
     def display_name(self, slug: str | None) -> str:
         if not slug:
@@ -69,10 +83,12 @@ class Omarchy:
         omarchy_bin: str = "omarchy",
         theme_name_file: Any = None,
         apply_timeout: float = 600.0,
+        runner: Callable[[list[str], float | None], subprocess.CompletedProcess] | None = None,
     ) -> None:
         self.omarchy_bin = omarchy_bin
         self.theme_name_file = Path(theme_name_file) if theme_name_file else paths.omarchy_current_theme_file()
         self.apply_timeout = apply_timeout
+        self._runner = runner or self._run
 
     def _run(self, args: list[str], timeout: float | None = None) -> subprocess.CompletedProcess:
         return subprocess.run(
@@ -86,15 +102,25 @@ class Omarchy:
     def theme_catalog(self, candidates: Iterable[str] = ()) -> ThemeCatalog:
         """Return one coherent view of installed themes for an operation."""
         names: list[str] = []
+        discovery_errors: list[str] = []
+        discovery_complete = False
         try:
-            proc = self._run(["theme", "list"], timeout=30)
-        except (OSError, subprocess.SubprocessError):
+            proc = self._runner(["theme", "list"], 30)
+        except (OSError, subprocess.SubprocessError) as exc:
             proc = None
+            discovery_errors.append(f"could not list Omarchy themes: {exc}")
         if proc is not None and proc.returncode == 0:
             names = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+            discovery_complete = True
+        elif proc is not None:
+            detail = (proc.stderr or proc.stdout or f"exit code {proc.returncode}").strip()
+            discovery_errors.append(f"could not list Omarchy themes: {detail}")
 
         themes: list[Theme] = []
         seen: set[str] = set()
+        probed: set[str] = set()
+        unknown_slugs: set[str] = set()
+        absent_slugs: set[str] = set()
         for name in names:
             slug = normalize_slug(name)
             if slug and slug not in seen:
@@ -103,16 +129,27 @@ class Omarchy:
 
         for candidate in candidates:
             slug = normalize_slug(candidate)
-            if not slug or slug in seen:
+            if not slug or slug in seen or slug in probed:
                 continue
+            probed.add(slug)
             try:
-                proc = self._run(["theme", "dir", slug], timeout=15)
-            except (OSError, subprocess.SubprocessError):
+                proc = self._runner(["theme", "dir", slug], 15)
+            except (OSError, subprocess.SubprocessError) as exc:
+                discovery_errors.append(f"could not inspect Omarchy theme {slug!r}: {exc}")
+                unknown_slugs.add(slug)
                 continue
             if proc.returncode == 0:
                 themes.append(Theme(slug, slug.replace("-", " ").title()))
                 seen.add(slug)
-        return ThemeCatalog(tuple(themes))
+            else:
+                absent_slugs.add(slug)
+        return ThemeCatalog(
+            tuple(themes),
+            "; ".join(dict.fromkeys(discovery_errors)) or None,
+            frozenset(unknown_slugs),
+            frozenset(absent_slugs),
+            discovery_complete=discovery_complete,
+        )
 
     def current_theme(self) -> str | None:
         try:
@@ -125,7 +162,7 @@ class Omarchy:
     def apply_theme(self, slug: str) -> ApplyResult:
         slug = normalize_slug(slug)
         try:
-            proc = self._run(["theme", "set", slug], timeout=self.apply_timeout)
+            proc = self._runner(["theme", "set", slug], self.apply_timeout)
         except subprocess.TimeoutExpired:
             return ApplyResult(success=False, stderr=f"omarchy theme set timed out after {self.apply_timeout}s")
         except OSError as exc:

@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 
 from dusk import scheduler as scheduler_mod
 from dusk import state as state_mod
+from dusk.omarchy import ThemeCatalog
 from tests import util  # noqa: F401
 from tests.helpers import FakeOmarchy, write_config
 
@@ -65,6 +66,18 @@ class SchedulerApplyTest(unittest.TestCase):
         self.assertEqual(st.applied_theme, LIGHT)
         self.assertEqual(st.desired_theme, LIGHT)
         self.assertIsNone(st.last_error)
+
+    def test_tick_uses_one_time_sample_for_decision_and_apply(self):
+        first = at(2026, 8, 19, 10, 0)
+        later = at(2026, 8, 19, 11, 0)
+        samples = iter((first, later))
+        om = FakeOmarchy(installed=[LIGHT, DARK], current="gruvbox")
+        s = make_scheduler(self.tmp.name, now=first, omarchy=om)
+        s.now_fn = lambda: next(samples)
+
+        s.tick()
+
+        self.assertEqual(state_mod.load_state(s.state_path).last_success, first.isoformat())
 
     def test_noop_when_already_current(self):
         om = FakeOmarchy(installed=[LIGHT, DARK], current=LIGHT)
@@ -238,20 +251,57 @@ class SchedulerStateTest(unittest.TestCase):
         self.assertFalse(st.configured)
         self.assertIsNone(st.desired_theme)
 
-    def test_reload_reports_failed_state_persistence(self):
+    def test_catalog_discovery_failure_is_not_reported_as_theme_absence(self):
+        om = FakeOmarchy(installed=[LIGHT, DARK], current="gruvbox")
+        om.theme_catalog = lambda candidates=(): ThemeCatalog(
+            (), "could not list Omarchy themes: unavailable", discovery_complete=False
+        )
         s = make_scheduler(
             self.tmp.name,
             now=at(2026, 8, 19, 10, 0),
-            omarchy=FakeOmarchy(installed=[LIGHT, DARK], current=LIGHT),
+            omarchy=om,
         )
-        invalid_parent = Path(self.tmp.name) / "not-a-directory"
-        invalid_parent.write_text("occupied", encoding="utf-8")
-        s.state_path = invalid_parent / "state.json"
 
-        response = s._request_handler({"cmd": "reload"})
+        s.tick()
 
-        self.assertFalse(response["ok"])
-        self.assertIn("persist", response["error"])
+        self.assertEqual(om.applied, [])
+        self.assertIn("could not list Omarchy themes", s.status_snapshot()["configWarning"])
+
+    def test_manual_mode_still_applies_when_catalog_discovery_fails(self):
+        om = FakeOmarchy(installed=[LIGHT, DARK], current="gruvbox")
+        om.theme_catalog = lambda candidates=(): ThemeCatalog(
+            (), "could not list Omarchy themes: unavailable", discovery_complete=False
+        )
+        s = make_scheduler(
+            self.tmp.name,
+            now=at(2026, 8, 19, 10, 0),
+            omarchy=om,
+            mode="manual",
+        )
+
+        s.tick()
+
+        self.assertEqual(om.applied, [LIGHT])
+        self.assertIn("could not list Omarchy themes", s.status_snapshot()["configWarning"])
+
+    def test_manual_mode_does_not_apply_theme_confirmed_absent_during_failure(self):
+        om = FakeOmarchy(installed=[DARK], current="gruvbox")
+        om.theme_catalog = lambda candidates=(): ThemeCatalog(
+            (),
+            "could not list Omarchy themes: unavailable",
+            absent_slugs=frozenset((LIGHT,)),
+            discovery_complete=False,
+        )
+        s = make_scheduler(
+            self.tmp.name,
+            now=at(2026, 8, 19, 10, 0),
+            omarchy=om,
+            mode="manual",
+        )
+
+        s.tick()
+
+        self.assertEqual(om.applied, [])
 
     def test_invalid_config_no_apply_and_error_recorded(self):
         config_path = Path(self.tmp.name) / "config.json"

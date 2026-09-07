@@ -98,6 +98,13 @@ class InstallTest(unittest.TestCase):
         self.run_script(ROOT / "install.sh", env=env)
         self.run_script(ROOT / "install.sh", env=env)
 
+        for source in sorted((ROOT / "dusk").glob("*.py")):
+            installed = dusk_home / "dusk" / source.name
+            self.assertEqual(
+                installed.read_text(encoding="utf-8"),
+                source.read_text(encoding="utf-8"),
+                source.name,
+            )
         for name in ("manifest.json", "Panel.qml", "Service.qml", "Icon.qml", "Bootstrap.qml"):
             self.assertTrue((plugin_dir / name).is_file(), name)
         self.assertTrue((plugin_dir / "bin" / "dusk-bootstrap").is_file())
@@ -123,6 +130,13 @@ class InstallTest(unittest.TestCase):
             runtime_module.read_text(encoding="utf-8"),
             (ROOT / "dusk" / "config.py").read_text(encoding="utf-8"),
         )
+
+        runtime_module.unlink()
+        result = self.run_script(
+            plugin_dir / "bin" / "dusk-bootstrap", "--check", env=qml_env, check=False
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.run_script(ROOT / "install.sh", env=env)
 
         plugin_service = plugin_dir / "Service.qml"
         plugin_service.unlink()

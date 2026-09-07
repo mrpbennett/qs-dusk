@@ -109,8 +109,14 @@ class RunLoopIntegrationTest(unittest.TestCase):
         )
         self.om = FakeOmarchy(installed=[LIGHT, DARK], current="gruvbox")
         self.clock = {"now": at(2026, 8, 19, 10, 0)}
+        self.now_calls = 0
+
+        def now():
+            self.now_calls += 1
+            return self.clock["now"]
+
         self.scheduler = scheduler_mod.Scheduler(
-            now_fn=lambda: self.clock["now"],
+            now_fn=now,
             tz_fn=lambda: UTC,
             location_provider=lambda: None,
             omarchy=self.om,
@@ -121,23 +127,17 @@ class RunLoopIntegrationTest(unittest.TestCase):
         )
 
     def tearDown(self):
+        if self.scheduler.server is not None:
+            self.scheduler.server.close()
         self.tmp.cleanup()
 
     def test_startup_status_reload_and_shutdown(self):
-        ticks = []
-        original_tick = self.scheduler.tick
-
-        def counted_tick():
-            ticks.append(True)
-            return original_tick()
-
-        self.scheduler.tick = counted_tick
         thread = threading.Thread(target=self.scheduler.run, daemon=True)
         thread.start()
         try:
             # Startup tick applies the desired theme through the adapter.
             self.assertTrue(wait_until(lambda: self.om.applied == [LIGHT]))
-            self.assertEqual(len(ticks), 1)
+            self.assertEqual(self.now_calls, 1)
 
             # A status query is answered mid-wait, out of the live engine.
             client = scheduler_mod.ipc.ControlClient(self.sock_path)
@@ -146,7 +146,7 @@ class RunLoopIntegrationTest(unittest.TestCase):
             self.assertTrue(response["state"]["daemonRunning"])
             self.assertEqual(response["state"]["desiredTheme"], LIGHT)
             time.sleep(0.05)
-            self.assertEqual(len(ticks), 1, "status must preserve the transition deadline")
+            self.assertEqual(self.now_calls, 1, "status must preserve the transition deadline")
 
             # Reload after the clock jumps past the evening transition must
             # recompute promptly: the regression that was previously untested.
@@ -155,9 +155,9 @@ class RunLoopIntegrationTest(unittest.TestCase):
             self.assertTrue(reload_response["ok"])
             self.assertEqual(reload_response["state"]["desiredTheme"], DARK)
             self.assertEqual(self.om.applied, [LIGHT, DARK])
-            self.assertEqual(len(ticks), 2)
+            self.assertEqual(self.now_calls, 2)
             time.sleep(0.05)
-            self.assertEqual(len(ticks), 2, "reload must not cause a duplicate tick")
+            self.assertEqual(self.now_calls, 2, "reload must not cause a duplicate tick")
             state = state_mod.load_state(self.state_path)
             self.assertEqual(state.applied_theme, DARK)
 
@@ -167,15 +167,113 @@ class RunLoopIntegrationTest(unittest.TestCase):
 
         self.assertFalse(thread.is_alive())
         self.assertFalse(self.sock_path.exists(), "shutdown must unlink the socket")
+        self.assertEqual(self.now_calls, 2, "stop Wake must not cause a final Tick")
+
+    def test_reload_reports_failed_state_persistence_through_control_socket(self):
+        invalid_parent = Path(self.tmp.name) / "not-a-directory"
+        invalid_parent.write_text("occupied", encoding="utf-8")
+        self.scheduler.state_path = invalid_parent / "state.json"
+        thread = threading.Thread(target=self.scheduler.run, daemon=True)
+        thread.start()
+        try:
+            self.assertTrue(wait_until(self.sock_path.exists))
+            response = scheduler_mod.ipc.ControlClient(self.sock_path).request("reload")
+            self.assertFalse(response["ok"])
+            self.assertIn("persist", response["error"])
+        finally:
+            self.stop_scheduler(thread)
+
+    def test_timeout_and_signal_wakes_each_cause_exactly_one_tick(self):
+        class WakeServer:
+            def __init__(self, first_wake):
+                self.first_wake = first_wake
+                self.calls = 0
+                self.scheduler = None
+
+            def register_wake(self, _fd):
+                pass
+
+            def poll(self, _timeout, handler=None):
+                self.calls += 1
+                if self.calls == 1:
+                    return self.first_wake
+                self.scheduler.stop()
+                return [{"cmd": "__signal"}]
+
+            def close(self):
+                pass
+
+        for first_wake in ([], [{"cmd": "__signal"}]):
+            with self.subTest(first_wake=first_wake):
+                now_calls = []
+
+                def now():
+                    now_calls.append(True)
+                    return self.clock["now"]
+
+                scheduler = scheduler_mod.Scheduler(
+                    now_fn=now,
+                    tz_fn=lambda: UTC,
+                    location_provider=lambda: None,
+                    omarchy=FakeOmarchy(installed=[LIGHT, DARK], current=LIGHT),
+                    config_path=self.config_path,
+                    state_path=self.state_path,
+                    socket_path=None,
+                    logger=scheduler_mod.log,
+                )
+                server = WakeServer(first_wake)
+                scheduler.server = server
+                server.scheduler = scheduler
+                thread = threading.Thread(target=scheduler.run, daemon=True)
+                thread.start()
+                thread.join(timeout=5)
+                self.assertFalse(thread.is_alive())
+                self.assertEqual(len(now_calls), 2)
+
+    def test_stop_wake_rejects_simultaneous_reload_without_ticking(self):
+        now_calls = []
+
+        def now():
+            now_calls.append(True)
+            return self.clock["now"]
+
+        scheduler = scheduler_mod.Scheduler(
+            now_fn=now,
+            tz_fn=lambda: UTC,
+            location_provider=lambda: None,
+            omarchy=FakeOmarchy(installed=[LIGHT, DARK], current=LIGHT),
+            config_path=self.config_path,
+            state_path=self.state_path,
+            socket_path=None,
+            logger=scheduler_mod.log,
+        )
+
+        class StopAndReloadServer:
+            response = None
+
+            def register_wake(self, _fd):
+                pass
+
+            def poll(self, _timeout, handler=None):
+                scheduler.stop()
+                self.response = handler({"cmd": "reload"})
+                return [{"cmd": "reload"}, {"cmd": "__signal"}]
+
+            def close(self):
+                pass
+
+        server = StopAndReloadServer()
+        scheduler.server = server
+        thread = threading.Thread(target=scheduler.run, daemon=True)
+        thread.start()
+        thread.join(timeout=5)
+
+        self.assertFalse(thread.is_alive())
+        self.assertFalse(server.response["ok"])
+        self.assertEqual(len(now_calls), 1)
 
     def stop_scheduler(self, thread):
-        self.scheduler._stop = True
-        wake_w = getattr(self.scheduler, "_wake_w", None)
-        if wake_w is not None:
-            try:
-                os.write(wake_w, b"x")
-            except OSError:
-                pass
+        self.scheduler.stop()
         thread.join(timeout=5)
 
 

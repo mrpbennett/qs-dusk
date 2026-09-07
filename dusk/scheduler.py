@@ -16,6 +16,7 @@ import os
 import signal
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -36,6 +37,27 @@ MAX_WAIT_SECONDS = 24 * 3600
 
 def local_tz() -> Any:
     return datetime.now().astimezone().tzinfo
+
+
+class TickResult(float):
+    """Wait seconds from one completed Tick, including persistence outcome."""
+
+    persisted: bool
+
+    def __new__(cls, wait: float, persisted: bool) -> TickResult:
+        result = super().__new__(cls, wait)
+        result.persisted = persisted
+        return result
+
+    @property
+    def wait(self) -> float:
+        return float(self)
+
+
+@dataclass(frozen=True)
+class _RequestResult:
+    response: dict[str, Any]
+    wait: float | None = None
 
 
 class Scheduler:
@@ -63,8 +85,6 @@ class Scheduler:
         self.config_warning: str | None = None
         self.server: ipc.ControlServer | None = None
         self._stop = False
-        self._wait_after_request: float | None = None
-        self._last_persisted = True
         self._wake_r: int | None = None
         self._wake_w: int | None = None
         if socket_path is not None:
@@ -83,14 +103,11 @@ class Scheduler:
 
         def handler(signum: int, _frame: Any) -> None:
             if signum in (signal.SIGTERM, signal.SIGINT):
-                self._stop = True
+                self.stop()
+                return
             elif signum == signal.SIGUSR1:
                 self.logger.info("reload requested via SIGUSR1")
-            if self._wake_w is not None:
-                try:
-                    os.write(self._wake_w, b"x")
-                except OSError:
-                    pass
+            self._wake()
 
         # signal.signal only works in the main thread; a background-thread
         # run() (tests) installs no handlers and is stopped via _stop.
@@ -100,6 +117,18 @@ class Scheduler:
             signal.signal(signal.SIGUSR1, handler)
         except ValueError:
             self.logger.debug("signal handlers unavailable off the main thread")
+
+    def _wake(self) -> None:
+        if self._wake_w is not None:
+            try:
+                os.write(self._wake_w, b"x")
+            except OSError:
+                pass
+
+    def stop(self) -> None:
+        """Stop the Pump promptly, including while it is waiting."""
+        self._stop = True
+        self._wake()
 
     def run(self) -> None:
         """Pump: tick, wait for the next wake, repeat.
@@ -111,37 +140,32 @@ class Scheduler:
         """
         self._install_signals()
         try:
-            wait = self.tick()
-            deadline = time.monotonic() + wait
+            deadline = time.monotonic() + self.tick()
             while not self._stop:
-                if self._stop:
-                    break
+                wait = deadline - time.monotonic()
                 if self.server is not None:
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
-                        wait = self.tick()
-                        deadline = time.monotonic() + wait
+                    if wait <= 0:
+                        deadline = self._deadline_after_wake(deadline, [], [])
                         continue
-                    handled = self.server.poll(remaining, handler=self._request_handler)
+                    request_results: list[_RequestResult] = []
+
+                    def handle_request(request: dict[str, Any]) -> dict[str, Any]:
+                        result = self._handle_request(request)
+                        request_results.append(result)
+                        return result.response
+
+                    handled = self.server.poll(wait, handler=handle_request)
                     self.logger.debug(
                         "woke after %.1fs: %s",
                         wait,
                         [request.get("cmd") for request in handled],
                     )
-                    if self._wait_after_request is not None:
-                        wait = self._wait_after_request
-                        self._wait_after_request = None
-                        deadline = time.monotonic() + wait
-                    elif handled and not any(
-                        request.get("cmd") == "__signal" for request in handled
-                    ):
-                        continue
-                    else:
-                        wait = self.tick()
-                        deadline = time.monotonic() + wait
+                    deadline = self._deadline_after_wake(
+                        deadline, handled, request_results
+                    )
                 else:
-                    time.sleep(min(wait, 1.0))
-                    wait = self.tick()
+                    time.sleep(max(0.0, min(wait, 1.0)))
+                    deadline = self._deadline_after_wake(deadline, [], [])
         finally:
             self.logger.info("scheduler stopped")
             if self.server is not None:
@@ -157,23 +181,49 @@ class Scheduler:
                 except OSError:
                     pass
 
+    def _deadline_after_wake(
+        self,
+        deadline: float,
+        handled: list[dict[str, Any]],
+        request_results: list[_RequestResult],
+    ) -> float:
+        """Classify one Wake and preserve or replace its transition deadline."""
+        if self._stop:
+            return deadline
+        replacement_waits = [
+            result.wait for result in request_results if result.wait is not None
+        ]
+        if replacement_waits:
+            return time.monotonic() + replacement_waits[-1]
+        if handled and not any(
+            request.get("cmd") == "__signal" for request in handled
+        ):
+            return deadline
+        return time.monotonic() + self.tick()
+
     # ---- requests ---------------------------------------------------------
 
-    def _request_handler(self, request: dict[str, Any]) -> dict[str, Any]:
+    def _handle_request(self, request: dict[str, Any]) -> _RequestResult:
+        if self._stop:
+            return _RequestResult({"ok": False, "error": "scheduler stopping"})
         cmd = request.get("cmd")
         if cmd == "status":
-            return {"ok": True, "state": self.status_snapshot()}
+            return _RequestResult({"ok": True, "state": self.status_snapshot()})
         if cmd == "reload":
             self.logger.info("reload requested via control socket")
-            self._wait_after_request = self.tick()
-            if not self._last_persisted:
-                return {"ok": False, "error": "could not persist State"}
-            return {"ok": True, "state": self.status_snapshot()}
-        return {"ok": False, "error": f"unknown command {cmd!r}"}
+            result = self.tick()
+            if not result.persisted:
+                return _RequestResult(
+                    {"ok": False, "error": "could not persist State"}, result.wait
+                )
+            return _RequestResult(
+                {"ok": True, "state": self.status_snapshot()}, result.wait
+            )
+        return _RequestResult({"ok": False, "error": f"unknown command {cmd!r}"})
 
     # ---- decision loop ----------------------------------------------------
 
-    def tick(self) -> float:
+    def tick(self) -> TickResult:
         """Advance the engine one step and return seconds until the next wake.
 
         Loads config once, resolves the :class:`~dusk.schedule.Decision` for
@@ -187,21 +237,36 @@ class Scheduler:
         location = self.location_provider()
         cfg, cfg_warning = config.load_config(self.config_path)
         self.config = cfg
-        self.config_warning = cfg_warning
-        catalog = self.omarchy.theme_catalog(
+        configured_themes = tuple(
             value for value in (cfg.get("lightTheme"), cfg.get("darkTheme")) if value
         )
+        catalog = self.omarchy.theme_catalog(configured_themes)
+        self.config_warning = "; ".join(
+            filter(None, (cfg_warning, catalog.discovery_error))
+        ) or None
 
         decision = schedule.resolve(
-            cfg, now, tz, location, theme_available=catalog.available
+            cfg,
+            now,
+            tz,
+            location,
+            theme_available=lambda slug: catalog.availability(slug) is not False,
         )
-        if cfg_warning and decision.ok:
-            decision.errors.append(cfg_warning)
+        decision_warnings = tuple(
+            warning
+            for warning in (
+                cfg_warning,
+                catalog.discovery_error if cfg.get("mode") != "manual" else None,
+            )
+            if warning
+        )
+        if decision_warnings and decision.ok:
+            decision.errors.extend(decision_warnings)
 
         self.state = self.state.synced_from(decision, location, now)
         if decision.configured and decision.desiredTheme and decision.ok:
-            self._apply(cfg, decision)
-        self._persist_state()
+            self._apply(cfg, decision, now)
+        persisted = self._persist_state()
 
         if not decision.ok:
             self.logger.warning("schedule invalid: %s", "; ".join(decision.errors))
@@ -213,7 +278,7 @@ class Scheduler:
             self.logger.info(
                 "mode=%s desired=%s next=%s", decision.mode, decision.desiredTheme, nxt_txt
             )
-        return self._next_wait(now, decision, cfg)
+        return TickResult(self._next_wait(now, decision, cfg), persisted)
 
     def _next_wait(self, now: datetime, decision: schedule.Decision, cfg: dict[str, Any]) -> float:
         """Seconds until the next scheduled wake, capped and retry-aware.
@@ -234,7 +299,12 @@ class Scheduler:
             seconds = min(seconds, float(cfg.get("retryIntervalSeconds", 120)))
         return seconds
 
-    def _apply(self, cfg: dict[str, Any], decision: schedule.Decision) -> None:
+    def _apply(
+        self,
+        cfg: dict[str, Any],
+        decision: schedule.Decision,
+        now: datetime,
+    ) -> None:
         desired = decision.desiredTheme
         if not desired:
             return
@@ -243,7 +313,7 @@ class Scheduler:
             self.state,
             self.omarchy,
             desired,
-            now=self.now_fn(),
+            now=now,
             max_retries=int(cfg.get("maxRetries", 5)),
         )
 
@@ -258,13 +328,13 @@ class Scheduler:
         if self.state.last_error:
             self.logger.error("%s", self.state.last_error)
 
-    def _persist_state(self) -> None:
-        self._last_persisted = True
+    def _persist_state(self) -> bool:
         try:
             state_mod.save_state(self.state, self.state_path)
         except OSError as exc:
-            self._last_persisted = False
             self.logger.error("could not persist state: %s", exc)
+            return False
+        return True
 
     # ---- helpers ----------------------------------------------------------
 

@@ -1,13 +1,12 @@
-import os
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from datetime import datetime, timezone
 from io import StringIO
 from pathlib import Path
 
 from dusk import cli, ipc
 from dusk import config as config_mod
-from dusk import paths as paths_mod
+from dusk import omarchy as omarchy_mod
 from dusk import state as state_mod
 from tests import util  # noqa: F401
 from tests.helpers import FakeOmarchy, write_config
@@ -16,7 +15,7 @@ LIGHT = "catppuccin-latte"
 DARK = "catppuccin"
 OTHER = "gruvbox"
 
-ENV_KEYS = ("XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_RUNTIME_DIR")
+NOW = datetime(2026, 9, 7, 12, 0, tzinfo=timezone.utc)
 
 
 class UpClient:
@@ -61,42 +60,42 @@ class RejectingClient:
 class CliTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        # Sandbox via XDG overrides: dusk.paths resolves from the environment
-        # on every call, so fakes flow through the interface and nothing is
-        # patched at module level.
-        self._old_env = {key: os.environ.get(key) for key in ENV_KEYS}
-        for key in ENV_KEYS:
-            os.environ[key] = self.tmp.name
-
+        self.root = Path(self.tmp.name)
+        self.stdout = StringIO()
+        self.stderr = StringIO()
         self.fake = FakeOmarchy(installed=[LIGHT, DARK, OTHER])
-        self.deps_up = cli.Deps(omarchy=self.fake, control=lambda path: UpClient(path))
-        self.deps_down = cli.Deps(omarchy=self.fake, control=lambda path: DownClient(path))
-        self.deps_rejecting = cli.Deps(
-            omarchy=self.fake,
-            control=lambda path: RejectingClient(path),
-        )
+        self.deps_up = self.deps(UpClient)
+        self.deps_down = self.deps(DownClient)
+        self.deps_rejecting = self.deps(RejectingClient)
 
     def tearDown(self):
-        for key, value in self._old_env.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
         self.tmp.cleanup()
+
+    def deps(self, client, omarchy=None):
+        return cli.Deps(
+            omarchy=omarchy or self.fake,
+            control=lambda path: client(path),
+            config_path=self.root / "config.json",
+            state_path=self.root / "state.json",
+            socket_path=self.root / "control.sock",
+            now_fn=lambda: NOW,
+            stdout=self.stdout,
+            stderr=self.stderr,
+        )
 
     @property
     def config_path(self) -> Path:
-        return paths_mod.config_file()
+        return self.deps_up.config_path
 
     @property
     def state_path(self) -> Path:
-        return paths_mod.state_file()
+        return self.deps_up.state_path
 
     def status_document(self, deps) -> dict:
-        output = StringIO()
-        with redirect_stdout(output):
-            self.assertEqual(cli.cmd_status(True, deps), 0)
-        return __import__("json").loads(output.getvalue())
+        self.stdout.seek(0)
+        self.stdout.truncate()
+        self.assertEqual(cli.cmd_status(True, deps), 0)
+        return __import__("json").loads(self.stdout.getvalue())
 
     def test_status_json_daemon_up(self):
         doc = self.status_document(self.deps_up)
@@ -165,6 +164,108 @@ class CliTest(unittest.TestCase):
         cfg, _ = config_mod.load_config(self.config_path)
         self.assertEqual(cfg["lightTheme"], LIGHT)
         self.assertEqual(cfg["darkTheme"], DARK)
+
+    def test_theme_list_reports_catalog_discovery_failure(self):
+        unavailable = FakeOmarchy()
+        unavailable.theme_catalog = lambda candidates=(): omarchy_mod.ThemeCatalog(
+            (), "could not list Omarchy themes: unavailable", discovery_complete=False
+        )
+        deps = self.deps(DownClient, unavailable)
+
+        self.assertEqual(cli.cmd_themes_list(True, deps), 1)
+        self.assertIn("could not list Omarchy themes", self.stderr.getvalue())
+
+    def test_offline_status_treats_catalog_failure_as_unknown_not_absent(self):
+        write_config(self.config_path, {"mode": "manual", "lightTheme": LIGHT, "darkTheme": DARK})
+        unavailable = FakeOmarchy()
+        unavailable.theme_catalog = lambda candidates=(): omarchy_mod.ThemeCatalog(
+            (), "could not list Omarchy themes: unavailable", discovery_complete=False
+        )
+
+        document = self.status_document(self.deps(DownClient, unavailable))
+
+        self.assertTrue(document["configured"])
+        self.assertIn("could not list Omarchy themes", document["configWarning"])
+
+    def test_offline_status_rejects_confirmed_absence_during_partial_failure(self):
+        write_config(self.config_path, {"mode": "manual", "lightTheme": LIGHT, "darkTheme": DARK})
+        partial = FakeOmarchy()
+        partial.theme_catalog = lambda candidates=(): omarchy_mod.ThemeCatalog(
+            (),
+            "could not list Omarchy themes: unavailable",
+            absent_slugs=frozenset((LIGHT,)),
+            discovery_complete=False,
+        )
+
+        document = self.status_document(self.deps(DownClient, partial))
+
+        self.assertFalse(document["configured"])
+        self.assertIsNone(document["desiredTheme"])
+
+    def test_human_status_prints_catalog_discovery_warning(self):
+        unavailable = FakeOmarchy()
+        unavailable.theme_catalog = lambda candidates=(): omarchy_mod.ThemeCatalog(
+            (), "could not list Omarchy themes: unavailable", discovery_complete=False
+        )
+
+        self.assertEqual(cli.cmd_status(False, self.deps(DownClient, unavailable)), 0)
+
+        self.assertIn("Warning: could not list Omarchy themes", self.stdout.getvalue())
+
+    def test_daemon_backed_human_status_prints_fresh_catalog_warning(self):
+        unavailable = FakeOmarchy()
+        unavailable.theme_catalog = lambda candidates=(): omarchy_mod.ThemeCatalog(
+            (), "could not list Omarchy themes: unavailable", discovery_complete=False
+        )
+
+        self.assertEqual(cli.cmd_status(False, self.deps(UpClient, unavailable)), 0)
+
+        self.assertIn("Warning: could not list Omarchy themes", self.stdout.getvalue())
+
+    def test_setting_confirmed_theme_reports_partial_catalog_failure(self):
+        partial = FakeOmarchy()
+        themes = (
+            omarchy_mod.Theme(LIGHT, "Catppuccin Latte"),
+            omarchy_mod.Theme(DARK, "Catppuccin"),
+        )
+        partial.theme_catalog = lambda candidates=(): omarchy_mod.ThemeCatalog(
+            themes, "could not list Omarchy themes: unavailable", discovery_complete=False
+        )
+
+        rc = cli.cmd_themes(LIGHT, DARK, self.deps(DownClient, partial))
+
+        self.assertEqual(rc, 0)
+        self.assertIn("note: could not list Omarchy themes", self.stderr.getvalue())
+
+    def test_setting_theme_rejects_confirmed_absent_existing_counterpart(self):
+        write_config(self.config_path, {"lightTheme": LIGHT, "darkTheme": DARK})
+        partial = FakeOmarchy()
+        partial.theme_catalog = lambda candidates=(): omarchy_mod.ThemeCatalog(
+            (omarchy_mod.Theme(LIGHT, "Catppuccin Latte"),),
+            "could not list Omarchy themes: unavailable",
+            absent_slugs=frozenset((DARK,)),
+            discovery_complete=False,
+        )
+
+        rc = cli.cmd_themes(LIGHT, None, self.deps(DownClient, partial))
+
+        self.assertEqual(rc, 1)
+        self.assertIn("darkTheme", self.stderr.getvalue())
+
+    def test_setting_confirmed_absent_theme_does_not_report_unknown(self):
+        partial = FakeOmarchy()
+        partial.theme_catalog = lambda candidates=(): omarchy_mod.ThemeCatalog(
+            (),
+            "could not list Omarchy themes: unavailable",
+            absent_slugs=frozenset((LIGHT,)),
+            discovery_complete=False,
+        )
+
+        rc = cli.cmd_themes(LIGHT, None, self.deps(DownClient, partial))
+
+        self.assertEqual(rc, 1)
+        self.assertIn("lightTheme", self.stderr.getvalue())
+        self.assertIn("not installed", self.stderr.getvalue())
 
     def test_offsets_validate_range(self):
         rc = cli.cmd_offsets("9999", "0", self.deps_up)

@@ -41,17 +41,19 @@ adapter, locality) follows the codebase-design glossary.
 - **Status document** — the consumer-facing projection of State, the Config
   that produced it, and Daemon liveness. With the Daemon down it uses current
   Config but never presents a stale automatic Decision as current.
-- **Theme catalog** — one coherent view of Omarchy's installed themes for an
-  operation: normalized slugs, display names, and availability.
+- **Theme catalog** — one coherent observation of Omarchy's installed themes
+  for an operation: normalized slugs, display names, availability, and whether
+  discovery succeeded. Failed discovery never masquerades as confirmed absence.
 - **Installation** — the idempotent setup of Dusk's executable links, Daemon
   unit, and optional bar widget files. A successful check means the installed
   paths still point at the current Dusk source.
 
 ## Architecture terms
 
-- **Tick** — one step of the engine (`Scheduler.tick`): load config once,
-  resolve the Decision, sync state, apply if healthy, persist, and return
-  the seconds until the next wake. Retry/backoff policy lives entirely here.
+- **Tick** — one step of the engine (`Scheduler.tick`): sample time once, load
+  config once, resolve the Decision, sync state, apply if healthy, persist, and
+  return the seconds until the next wake together with the persistence outcome.
+  Retry/backoff policy lives entirely here.
 - **Pump** — `Scheduler.run`: wires wakes (socket requests, signal pipe,
   timeout) into ticks; owns no policy. A `reload` handler completes a fresh
   Tick before replying; observational requests preserve the current transition

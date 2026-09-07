@@ -13,15 +13,45 @@ SYSTEMCTL="${SYSTEMCTL:-systemctl}"
 UNIT_TEMPLATE="$DUSK_HOME/systemd/dusk.service.tpl"
 UNIT_FILE="$UNIT_DIR/dusk.service"
 
-runtime_files=(
-  manifest.json Panel.qml Service.qml Icon.qml Bootstrap.qml
-  bin/dusk-bootstrap bin/dusk-install bin/omarchy-auto-theme bin/dusk-scheduler
-  docs/usage.md docs/design.md systemd/dusk.service.tpl
-  dusk/__init__.py dusk/cli.py dusk/config.py dusk/engine.py dusk/ipc.py
-  dusk/omarchy.py dusk/paths.py dusk/schedule.py dusk/scheduler.py dusk/solar.py
-  dusk/state.py dusk/status.py
+install_plan=(
+  "manifest.json|plugin"
+  "Panel.qml|plugin"
+  "Service.qml|plugin"
+  "Icon.qml|plugin"
+  "Bootstrap.qml|plugin"
+  "bin/dusk-bootstrap|plugin executable plugin-executable"
+  "bin/dusk-install|executable"
+  "bin/omarchy-auto-theme|executable link"
+  "bin/dusk-scheduler|executable link"
+  "docs/usage.md|"
+  "docs/design.md|"
+  "systemd/dusk.service.tpl|"
+  "dusk/__init__.py|"
+  "dusk/cli.py|"
+  "dusk/config.py|"
+  "dusk/engine.py|"
+  "dusk/ipc.py|"
+  "dusk/omarchy.py|"
+  "dusk/paths.py|"
+  "dusk/schedule.py|"
+  "dusk/scheduler.py|"
+  "dusk/solar.py|"
+  "dusk/state.py|"
+  "dusk/status.py|"
 )
-plugin_files=(manifest.json Panel.qml Service.qml Icon.qml Bootstrap.qml)
+runtime_files=()
+plugin_files=()
+executable_files=()
+plugin_executable_files=()
+linked_commands=()
+for entry in "${install_plan[@]}"; do
+  IFS='|' read -r file roles <<< "$entry"
+  runtime_files+=("$file")
+  [[ " $roles " == *" plugin "* ]] && plugin_files+=("$file")
+  [[ " $roles " == *" executable "* ]] && executable_files+=("$file")
+  [[ " $roles " == *" plugin-executable "* ]] && plugin_executable_files+=("$file")
+  [[ " $roles " == *" link "* ]] && linked_commands+=("${file##*/}")
+done
 
 if [[ -x /usr/bin/python3 ]]; then
   PYTHON=/usr/bin/python3
@@ -72,11 +102,6 @@ copy_plugin() {
     fi
     cp -a "$DUSK_HOME/$file" "$target"
   done
-  target="$PLUGIN_DIR/bin/dusk-bootstrap"
-  if [[ -L $target || ( -e $target && ! -f $target ) ]]; then
-    rm -rf -- "$target"
-  fi
-  cp -a "$DUSK_HOME/bin/dusk-bootstrap" "$target"
   printf '%s\n' "$DUSK_HOME" > "$PLUGIN_DIR/.dusk-home"
 }
 
@@ -84,6 +109,7 @@ same_runtime_layout() {
   local file
   require_layout "$DUSK_SOURCE_DIR" || return 1
   require_layout "$DUSK_HOME" || return 1
+  same_dir "$DUSK_SOURCE_DIR" "$DUSK_HOME" && return 0
   for file in "${runtime_files[@]}"; do
     cmp -s "$DUSK_SOURCE_DIR/$file" "$DUSK_HOME/$file" || return 1
   done
@@ -95,8 +121,9 @@ same_plugin_layout() {
   for file in "${plugin_files[@]}"; do
     cmp -s "$DUSK_HOME/$file" "$PLUGIN_DIR/$file" || return 1
   done
-  cmp -s "$DUSK_HOME/bin/dusk-bootstrap" "$PLUGIN_DIR/bin/dusk-bootstrap" || return 1
-  [[ -x "$PLUGIN_DIR/bin/dusk-bootstrap" ]] || return 1
+  for file in "${plugin_executable_files[@]}"; do
+    [[ -x "$PLUGIN_DIR/$file" ]] || return 1
+  done
   if ! same_dir "$DUSK_HOME" "$PLUGIN_DIR"; then
     [[ -f "$PLUGIN_DIR/.dusk-home" ]] || return 1
     IFS= read -r marker < "$PLUGIN_DIR/.dusk-home"
@@ -136,14 +163,15 @@ install_link() {
 }
 
 check_install() {
+  local file name
   same_runtime_layout || return 1
   same_plugin_layout || return 1
-  [[ -x "$DUSK_HOME/bin/dusk-bootstrap" ]] || return 1
-  [[ -x "$DUSK_HOME/bin/dusk-install" ]] || return 1
-  [[ -x "$DUSK_HOME/bin/omarchy-auto-theme" ]] || return 1
-  [[ -x "$DUSK_HOME/bin/dusk-scheduler" ]] || return 1
-  check_link omarchy-auto-theme || return 1
-  check_link dusk-scheduler || return 1
+  for file in "${executable_files[@]}"; do
+    [[ -x "$DUSK_HOME/$file" ]] || return 1
+  done
+  for name in "${linked_commands[@]}"; do
+    check_link "$name" || return 1
+  done
   [[ -f "$UNIT_FILE" ]] || return 1
   cmp -s <(render_unit) "$UNIT_FILE"
 }
@@ -164,10 +192,12 @@ esac
 copy_runtime
 copy_plugin
 mkdir -p "$BIN_DIR" "$UNIT_DIR"
-chmod +x "$DUSK_HOME/bin/dusk-bootstrap" "$DUSK_HOME/bin/dusk-install" \
-  "$DUSK_HOME/bin/omarchy-auto-theme" "$DUSK_HOME/bin/dusk-scheduler"
-install_link omarchy-auto-theme
-install_link dusk-scheduler
+for file in "${executable_files[@]}"; do
+  chmod +x "$DUSK_HOME/$file"
+done
+for name in "${linked_commands[@]}"; do
+  install_link "$name"
+done
 
 unit_tmp="$UNIT_FILE.tmp.$$"
 trap 'rm -f "$unit_tmp"' EXIT

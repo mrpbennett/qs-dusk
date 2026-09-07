@@ -67,6 +67,8 @@ config/state falls back to safe defaults and never overwrites user data.
 - `lightTheme`/`darkTheme` must resolve against `omarchy theme list` before
   automation is enabled; both `None` means "not configured" and the scheduler
   idles without applying anything.
+- If Omarchy's Theme catalog cannot be discovered, Dusk reports that failure
+  and withholds automatic applies; it does not report themes as uninstalled.
 - `scheduled` times are local `HH:MM` and must differ.
 - `solar.fallback` is used only when solar data is unavailable (no weather
   coordinates, invalid coordinates, or calculation failure) — the fallback
