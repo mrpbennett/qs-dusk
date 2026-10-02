@@ -74,7 +74,9 @@ class Scheduler:
     ) -> None:
         self.now_fn = now_fn or (lambda: datetime.now().astimezone())
         self.tz_fn = tz_fn or local_tz
-        self.location_provider = location_provider or (lambda: omarchy_mod.weather_location())
+        self.location_provider = location_provider or (
+            lambda: omarchy_mod.weather_location()
+        )
         self.omarchy = omarchy or omarchy_mod.Omarchy()
         self.config_path = Path(config_path) if config_path else paths.config_file()
         self.state_path = Path(state_path) if state_path else paths.state_file()
@@ -195,9 +197,7 @@ class Scheduler:
         ]
         if replacement_waits:
             return time.monotonic() + replacement_waits[-1]
-        if handled and not any(
-            request.get("cmd") == "__signal" for request in handled
-        ):
+        if handled and not any(request.get("cmd") == "__signal" for request in handled):
             return deadline
         return time.monotonic() + self.tick()
 
@@ -241,9 +241,9 @@ class Scheduler:
             value for value in (cfg.get("lightTheme"), cfg.get("darkTheme")) if value
         )
         catalog = self.omarchy.theme_catalog(configured_themes)
-        self.config_warning = "; ".join(
-            filter(None, (cfg_warning, catalog.discovery_error))
-        ) or None
+        self.config_warning = (
+            "; ".join(filter(None, (cfg_warning, catalog.discovery_error))) or None
+        )
 
         decision = schedule.resolve(
             cfg,
@@ -271,16 +271,23 @@ class Scheduler:
         if not decision.ok:
             self.logger.warning("schedule invalid: %s", "; ".join(decision.errors))
         elif not decision.configured:
-            self.logger.info("dusk not configured: set themes with `omarchy-auto-theme themes --light .. --dark ..`")
+            self.logger.info(
+                "dusk not configured: set themes with `omarchy-auto-theme themes --light .. --dark ..`"
+            )
         else:
             nxt = decision.nextTransition
             nxt_txt = nxt.strftime("%Y-%m-%d %H:%M %Z") if nxt else "none"
             self.logger.info(
-                "mode=%s desired=%s next=%s", decision.mode, decision.desiredTheme, nxt_txt
+                "mode=%s desired=%s next=%s",
+                decision.mode,
+                decision.desiredTheme,
+                nxt_txt,
             )
         return TickResult(self._next_wait(now, decision, cfg), persisted)
 
-    def _next_wait(self, now: datetime, decision: schedule.Decision, cfg: dict[str, Any]) -> float:
+    def _next_wait(
+        self, now: datetime, decision: schedule.Decision, cfg: dict[str, Any]
+    ) -> float:
         """Seconds until the next scheduled wake, capped and retry-aware.
 
         Uses the live ``decision.nextTransition``; the ISO string in
@@ -321,7 +328,9 @@ class Scheduler:
             self.logger.info("theme %r already active; no-op", desired)
             return
         if outcome.exhausted:
-            self.logger.warning("giving up on theme %r until the next transition", desired)
+            self.logger.warning(
+                "giving up on theme %r until the next transition", desired
+            )
             return
         if outcome.attempted:
             self.logger.info("applying theme %r via `omarchy theme set`", desired)
